@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gp-monitor"
+version = "1.0.0"
+description = "Agente Python para monitoreo de servidores (Windows Server 2019/2022, Linux, macOS) — envía métricas básicas a gp-it vía HTTPS."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "ISC" }
+authors = [
+  { name = "GP IT", email = "it@grupoplasencia.com" },
+]
+keywords = ["monitoring", "agent", "psutil", "gp-it", "gp-dash"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: POSIX :: Linux",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: ISC License (ISCL)",
+  "Operating System :: Microsoft :: Windows :: Windows Server 2019",
+  "Operating System :: Microsoft :: Windows :: Windows Server 2022",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "psutil>=5.9,<6.0",
+  "requests>=2.31,<3.0",
+  "PyYAML>=6.0,<7.0",
+  "python-dotenv>=1.0,<2.0",
+  # Windows service install (opcional; el agente corre igual sin él)
+  "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-mock>=3.10",
+]
+
+[project.scripts]
+gp-monitor = "gp_monitor.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/WsSolitario/gp-monitor"
+Documentation = "https://github.com/WsSolitario/gp-monitor#readme"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gp_monitor = ["py.typed"]

@@ -1,0 +1,47 @@
+# gp-monitor configuration
+# Copy to config.yaml and edit values.
+
+# ─── API destino ──────────────────────────────────────────────────────────────
+# URL base del backend gp-it (sin trailing slash).
+api_url: "https://api.dev.gp.ssdevsolutions.com"
+
+# Token de enrollment (variable MONITOR_ENROLLMENT_TOKEN en gp-it/.env).
+# Se comparte entre todos los nodos. Es válido solo para el primer registro;
+# tras eso, el agente recibe una apiKey única y ya no necesita este token.
+enrollment_token: "PEGAR_AQUI_MONITOR_ENROLLMENT_TOKEN"
+
+# ─── Identidad del nodo ───────────────────────────────────────────────────────
+# Nombre legible que verá el dashboard. Si se omite, se usa el hostname.
+name: "Servidor de Producción"
+
+# Hostname que verá el dashboard. Si se omite, se detecta con socket.gethostname().
+#hostname: ""
+
+# Agencia / ubicación física (opcional, se puede editar después en el dashboard).
+agency: "Matriz"
+
+# Entorno. Valores permitidos: production, staging, development, testing.
+environment: "production"
+
+# Descripción libre (opcional).
+description: ""
+
+# ─── Intervalos ───────────────────────────────────────────────────────────────
+# Cada cuántos segundos enviar un heartbeat. 60s recomendado.
+heartbeat_interval_seconds: 60
+
+# Timeout HTTP en segundos para requests a la API.
+http_timeout_seconds: 15
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+# Nivel: DEBUG, INFO, WARNING, ERROR.
+log_level: "INFO"
+
+# Ruta del archivo de log (None = solo consola). En producción, el servicio
+# Windows redirige stdout/stderr a un archivo.
+log_file: null
+
+# ─── Persistencia local ───────────────────────────────────────────────────────
+# Directorio donde se guardan uuid, api_key y último heartbeat.
+# En Windows como servicio suele ser C:\ProgramData\gp-monitor\
+state_dir: "C:/ProgramData/gp-monitor"
