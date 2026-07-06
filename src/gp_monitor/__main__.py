@@ -13,20 +13,10 @@ from gp_monitor.config import load_config
 
 
 def _setup_logging(level: str, log_file: Optional[str] = None) -> None:
-    numeric = getattr(logging, level.upper(), logging.INFO)
-    handlers = [logging.StreamHandler(sys.stderr)]
-    if log_file:
-        try:
-            Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-            handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
-        except OSError:
-            pass
-    logging.basicConfig(
-        level=numeric,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=handlers,
-    )
+    """Wrapper backwards-compat: delega a agent.setup_logging."""
+    from gp_monitor.agent import setup_logging
+    from pathlib import Path
+    setup_logging(level, log_file, Path("."))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -88,19 +78,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"✗ Error cargando configuración: {exc}", file=sys.stderr)
         return 2
 
-    # Si el config no define log_file, default a <state_dir>/gp-monitor.log.
-    # Asi siempre hay un archivo visible cuando corre como servicio de Windows
-    # (donde stderr normalmente se descarta).
-    log_file = config.log_file
-    if not log_file:
-        try:
-            default_log = config.state_dir_path() / "gp-monitor.log"
-            default_log.parent.mkdir(parents=True, exist_ok=True)
-            log_file = str(default_log)
-        except OSError:
-            pass  # fallback a solo stderr
-
-    _setup_logging(config.log_level, log_file)
+    _setup_logging(config.log_level, config.log_file)
     logger = logging.getLogger("gp_monitor.cli")
 
     if args.command == "run":

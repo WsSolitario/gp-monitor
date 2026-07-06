@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from gp_monitor.api_client import MonitorApiError, MonitorClient
@@ -37,10 +38,52 @@ from gp_monitor.state import (
 logger = logging.getLogger("gp_monitor.agent")
 
 
+def setup_logging(level: str, log_file: Optional[str], state_dir: Path) -> None:
+    """Configura logging para stderr + archivo.
+
+    Si `log_file` viene None/empty, default a `<state_dir>/gp-monitor.log`
+    (creando el directorio si hace falta). Asi el agente deja logs
+    visibles cuando corre como servicio de Windows, donde stderr se
+    descarta.
+
+    Esta función se llama desde MonitorAgent.__init__ para que el setup
+    aplique tanto en modo CLI como en modo servicio.
+    """
+    numeric = getattr(logging, level.upper(), logging.INFO)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+
+    target = log_file
+    if not target:
+        try:
+            default_log = state_dir / "gp-monitor.log"
+            default_log.parent.mkdir(parents=True, exist_ok=True)
+            target = str(default_log)
+        except OSError:
+            target = None  # fallback a solo stderr
+
+    if target:
+        try:
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(target, encoding="utf-8"))
+        except OSError:
+            pass
+
+    logging.basicConfig(
+        level=numeric,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
+
+
 class MonitorAgent:
     """Agente de monitoreo. Un único loop por proceso."""
 
     def __init__(self, config: Config, *, client: Optional[MonitorClient] = None) -> None:
+        # Setup de logging ANTES de cualquier otra cosa — asi aun si falla
+        # algo abajo, queda registro en el archivo.
+        setup_logging(config.log_level, config.log_file, config.state_dir_path())
+
         self.config = config
         self.client = client or MonitorClient(
             api_url=config.api_url,
