@@ -55,7 +55,10 @@ class GpMonitorWindowsService:
     _svc_display_name_ = SERVICE_DISPLAY_NAME
     _svc_description_ = SERVICE_DESCRIPTION
 
-    def __init__(self) -> None:
+    def __init__(self, *args) -> None:
+        # pywin32's pythonservice.exe invoca el constructor pasando
+        # siempre un argumento (None o el arg vector). Aceptamos *args
+        # para ser compatibles con esa convención.
         if not _pywin32_available():
             raise RuntimeError("pywin32 no disponible")
 
