@@ -35,6 +35,19 @@ if not exist config\config.yaml (
     pause
 )
 
+REM Copiar config a la ubicacion estandar donde el agente lo busca
+REM cuando corre como servicio (CWD != directorio del proyecto).
+if not exist "%ProgramData%\gp-monitor" mkdir "%ProgramData%\gp-monitor"
+if not exist "%ProgramData%\gp-monitor\config.yaml" (
+    if exist config\config.yaml (
+        copy /Y config\config.yaml "%ProgramData%\gp-monitor\config.yaml" >nul
+        echo [INFO] config copiado a %ProgramData%\gp-monitor\config.yaml
+    ) else (
+        echo [WARN] No hay config\config.yaml para copiar al ProgramData.
+        echo        El servicio no encontrara el enrollment_token.
+    )
+)
+
 "%PYTHON_EXE%" -m gp_monitor install
 if errorlevel 1 (
     echo [ERROR] Fallo la instalacion del servicio.
