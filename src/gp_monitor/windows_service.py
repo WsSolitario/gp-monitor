@@ -46,37 +46,40 @@ def _pywin32_available() -> bool:
         return False
 
 
-# Importar win32serviceutil a nivel de módulo para que GpMonitorWindowsService
-# pueda heredar de ServiceFramework sin que la clase se evalúe en tiempo de
-# import cuando pywin32 no esté disponible.
+# Definición de la clase de servicio: cuando pywin32 está disponible,
+# hereda de ServiceFramework. Esto es CRÍTICO: ServiceFramework.__init__
+# registra el handler del SCM y la clase provee el método legacy SvcRun()
+# que delega a SvcDoRun() — sin la herencia pywin32 falla con
+# "did not register a service control handler" y "no attribute SvcRun".
+#
+# En plataformas sin pywin32 (Linux/macOS/Windows sin el paquete instalado),
+# definimos una clase stub con la misma forma para que el módulo sea
+# importable y los comandos install/uninstall devuelvan un mensaje claro.
+
 if _pywin32_available():
-    import win32serviceutil as _win32serviceutil  # noqa: F401
+    import win32serviceutil as _w32su
+
+    class GpMonitorWindowsService(_w32su.ServiceFramework):
+        """Implementación Windows del servicio. Hereda de ServiceFramework."""
+
+        _svc_name_ = SERVICE_NAME
+        _svc_display_name_ = SERVICE_DISPLAY_NAME
+        _svc_description_ = SERVICE_DESCRIPTION
+
+        def __init__(self, *args) -> None:
+            # pythonservice.exe siempre pasa argumentos al constructor.
+            # ServiceFramework.__init__ los usa para registrar el handler.
+            _w32su.ServiceFramework.__init__(self, *args)
+            self._agent = None
+
 else:
-    _win32serviceutil = None  # type: ignore[assignment]
+    class GpMonitorWindowsService:  # noqa: D401  stub no Windows
+        """Stub para plataformas sin pywin32. Los métodos son no-op."""
 
-
-class GpMonitorWindowsService:  # type: ignore[no-redef]
-    """Implementación concreta del servicio.
-
-    IMPORTANTE: debe heredar de ServiceFramework. Esa clase base hace dos
-    cosas críticas en __init__:
-      1. Registra el handler de control del SCM (sin esto, el SCM no
-         puede pausar/reanudar/parar el servicio y tira el error
-         "The Python class did not register a service control handler").
-      2. Provee el método legacy SvcRun() que delega a SvcDoRun() — si no
-         heredamos, pywin32 busca SvcRun y falla con AttributeError
-         (porque los nombres EXACTOS que busca son SvcRun y/o SvcDoRun).
-    """
-
-    _svc_name_ = SERVICE_NAME
-    _svc_display_name_ = SERVICE_DISPLAY_NAME
-    _svc_description_ = SERVICE_DESCRIPTION
-
-    def __init__(self, *args) -> None:
-        # pythonservice.exe siempre pasa argumentos al constructor.
-        # ServiceFramework.__init__ los necesita para registrar el handler.
-        win32serviceutil.ServiceFramework.__init__(self, *args)
-        self._agent = None
+        def __init__(self, *args) -> None:
+            raise RuntimeError(
+                "pywin32 no esta disponible. Instala con: pip install pywin32"
+            )
 
     def SvcDoRun(self) -> None:                             # noqa: N802
         import servicemanager
