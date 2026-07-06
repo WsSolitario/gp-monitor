@@ -58,9 +58,15 @@ def _pywin32_available() -> bool:
 
 if _pywin32_available():
     import win32serviceutil as _w32su
+    import win32service as _w32svc
 
     class GpMonitorWindowsService(_w32su.ServiceFramework):
-        """Implementación Windows del servicio. Hereda de ServiceFramework."""
+        """Implementación Windows del servicio. Hereda de ServiceFramework.
+
+        IMPORTANTE: ServiceFramework provee SvcRun() que delega a
+        self.SvcDoRun(). Ambos metodos deben existir en esta subclase;
+        si SvcDoRun no esta definido, SvcRun falla con AttributeError.
+        """
 
         _svc_name_ = SERVICE_NAME
         _svc_display_name_ = SERVICE_DISPLAY_NAME
@@ -72,50 +78,49 @@ if _pywin32_available():
             _w32su.ServiceFramework.__init__(self, *args)
             self._agent = None
 
+        def SvcDoRun(self) -> None:                             # noqa: N802
+            import servicemanager
+            from gp_monitor.agent import MonitorAgent
+            from gp_monitor.config import load_config
+
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+
+            try:
+                config = load_config()
+                self._agent = MonitorAgent(config)
+                self._agent.run()
+            except Exception as exc:                            # noqa: BLE001
+                logger.exception("Error en SvcDoRun: %s", exc)
+                servicemanager.LogMsg(
+                    servicemanager.EVENTLOG_ERROR_TYPE,
+                    0xF000,  # generic error
+                    (f"gp-monitor crashed: {exc}", ""),
+                )
+
+        def SvcStop(self) -> None:                              # noqa: N802
+            import servicemanager
+
+            self.ReportServiceStatus(_w32svc.ServiceStop)
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STOPPED,
+                (self._svc_name_, ""),
+            )
+            if getattr(self, "_agent", None) is not None:
+                self._agent.stop()
+
 else:
     class GpMonitorWindowsService:  # noqa: D401  stub no Windows
-        """Stub para plataformas sin pywin32. Los métodos son no-op."""
+        """Stub para plataformas sin pywin32."""
 
         def __init__(self, *args) -> None:
             raise RuntimeError(
                 "pywin32 no esta disponible. Instala con: pip install pywin32"
             )
-
-    def SvcDoRun(self) -> None:                             # noqa: N802
-        import servicemanager
-        from gp_monitor.agent import MonitorAgent
-        from gp_monitor.config import load_config
-
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
-
-        try:
-            config = load_config()
-            self._agent = MonitorAgent(config)
-            self._agent.run()
-        except Exception as exc:                            # noqa: BLE001
-            logger.exception("Error en SvcDoRun: %s", exc)
-            servicemanager.LogMsg(
-                servicemanager.EVENTLOG_ERROR_TYPE,
-                0xF000,  # generic error
-                (f"gp-monitor crashed: {exc}", ""),
-            )
-
-    def SvcStop(self) -> None:                              # noqa: N802
-        import servicemanager
-        from win32service import ServiceStop  # type: ignore
-
-        self.ReportServiceStatus(ServiceStop)
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STOPPED,
-            (self._svc_name_, ""),
-        )
-        if getattr(self, "_agent", None) is not None:
-            self._agent.stop()
 
 
 # ─── Comandos CLI ─────────────────────────────────────────────────────────────
