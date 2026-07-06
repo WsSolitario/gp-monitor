@@ -3,7 +3,15 @@
 
 # ─── API destino ──────────────────────────────────────────────────────────────
 # URL base del backend gp-it (sin trailing slash).
-api_url: "https://api.dev.gp.ssdevsolutions.com"
+#
+# ⚠️  IMPORTANTE: la URL correcta es con subdominio ".2." (api.dev.gp.2.),
+# NO api.dev.gp. a secas. El subdominio sin ".2." apunta al backend
+# legado (api-gp) que NO tiene las rutas de monitor.
+#
+# Ejemplo CORRECTO: "https://api.dev.gp.2.ssdevsolutions.com"
+# Ejemplo INCORRECTO: "https://api.dev.gp.ssdevsolutions.com"  ← no anda
+#
+api_url: "https://api.dev.gp.2.ssdevsolutions.com"
 
 # Token de enrollment (variable MONITOR_ENROLLMENT_TOKEN en gp-it/.env).
 # Se comparte entre todos los nodos. Es válido solo para el primer registro;
