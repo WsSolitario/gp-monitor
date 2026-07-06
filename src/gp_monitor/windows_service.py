@@ -109,6 +109,7 @@ def install_service(config_path: Optional[Path] = None) -> int:
         return 2
 
     import win32serviceutil
+    import win32service
     import win32api
     import pywintypes
 
@@ -127,7 +128,7 @@ def install_service(config_path: Optional[Path] = None) -> int:
             displayName=SERVICE_DISPLAY_NAME,
             description=SERVICE_DESCRIPTION,
             exeName=cmd,
-            startType=win32serviceutil.SERVICE_AUTO_START,
+            startType=win32service.SERVICE_AUTO_START,
         )
         print(f"✓ Servicio '{SERVICE_NAME}' instalado.")
         print(f"  Para arrancarlo:    gp-monitor start")
@@ -194,10 +195,11 @@ def service_status() -> int:
     if not _is_windows() or not _pywin32_available():
         return 2
     import win32serviceutil
+    import win32service
     import pywintypes
     try:
         status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
-        running = status[1] == win32serviceutil.SERVICE_RUNNING
+        running = status[1] == win32service.SERVICE_RUNNING
         state_code = status[1]
         STATE_NAMES = {
             1: "STOPPED",
