@@ -22,9 +22,23 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config") / "config.yaml"
+
+# Rutas adicionales donde buscar config.yaml, en orden de prioridad.
+# Las primeras 2 son las del repo (funcionan cuando se corre desde el codigo).
+# Las siguientes son para cuando corre como servicio de Windows o systemd,
+# donde el CWD no es el directorio del proyecto y los paths relativos fallan.
 ALT_CONFIG_PATHS = [
     Path("config.yaml"),
     Path("config") / "config.example.yaml",
+    # Estandar Windows: junto al state_dir
+    Path("C:/ProgramData/gp-monitor/config.yaml"),
+    Path("C:/ProgramData/gp-monitor/config.yml"),
+    # Estandar Linux: /etc
+    Path("/etc/gp-monitor/config.yaml"),
+    Path("/etc/gp-monitor/config.yml"),
+    # Fallback al lado del paquete (instalacion editable via pip install -e)
+    Path(__file__).resolve().parent.parent.parent / "config" / "config.yaml",
+    Path(__file__).resolve().parent.parent.parent / "config.yaml",
 ]
 
 
