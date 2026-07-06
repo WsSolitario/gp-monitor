@@ -170,6 +170,98 @@ class NetworkRateCollector:
         return {"network_rx_bps": rx_bps, "network_tx_bps": tx_bps}
 
 
+# ─── IPs internas ─────────────────────────────────────────────────────────────
+
+def _is_internal_ipv4(addr: str) -> bool:
+    """True si `addr` es IPv4 util para un servidor (no loopback, no link-local)."""
+    if not addr or not addr[0].isdigit():
+        return False
+    parts = addr.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(p) for p in parts]
+    except ValueError:
+        return False
+    if octets[0] == 127:                                   # loopback
+        return False
+    if octets[0] == 169 and octets[1] == 254:             # link-local
+        return False
+    if octets[0] == 0:                                     # "this network"
+        return False
+    if octets[0] >= 224:                                   # multicast / reserved
+        return False
+    return True
+
+
+def get_primary_internal_ip() -> Optional[str]:
+    """Devuelve la IP que el server usaria para trafico saliente.
+
+    Metodo: abrir un socket UDP y hacer 'connect' a un destino publico
+    (no envia paquetes, solo determina la ruta). Si no se puede, cae
+    al primer psutil.net_if_addrs() IPv4 interno.
+
+    Devuelve None si no se puede determinar.
+    """
+    # 1) Metodo socket.connect: detecta la IP "outbound" real
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        if _is_internal_ipv4(ip):
+            return ip
+    except Exception:
+        pass
+    finally:
+        s.close()
+
+    # 2) Fallback: psutil enumera interfaces
+    try:
+        for _iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                fam = getattr(addr, "family", None)
+                # psutil usa AF_INET (int 2) en vez de socket.AF_INET en algunas builds.
+                # Aceptamos cualquier familia que represente IPv4.
+                if fam in (socket.AF_INET, 2) and _is_internal_ipv4(addr.address):
+                    return addr.address
+    except Exception:
+        pass
+
+    return None
+
+
+def collect_internal_ips() -> list[str]:
+    """Devuelve la lista de IPv4 internas (no loopback / no link-local).
+
+    La primera entrada es la IP 'principal' (la que usaria trafico saliente).
+    Las siguientes son las otras NICs internas detectadas.
+
+    Devuelve [] si no se puede determinar nada.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+
+    # Primero la IP principal (la mas util para el dashboard)
+    primary = get_primary_internal_ip()
+    if primary and primary not in seen:
+        seen.add(primary)
+        result.append(primary)
+
+    # Despues las demas interfaces IPv4 internas
+    try:
+        for _iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                fam = getattr(addr, "family", None)
+                if fam in (socket.AF_INET, 2) and _is_internal_ipv4(addr.address):
+                    if addr.address not in seen:
+                        seen.add(addr.address)
+                        result.append(addr.address)
+    except Exception as exc:
+        logger.debug("No se pudo enumerar interfaces de red: %s", exc)
+
+    return result
+
+
 # ─── API principal ────────────────────────────────────────────────────────────
 
 def collect_metrics(

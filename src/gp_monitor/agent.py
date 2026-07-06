@@ -23,6 +23,7 @@ from typing import Optional
 from gp_monitor.api_client import MonitorApiError, MonitorClient
 from gp_monitor.collectors import (
     NetworkRateCollector,
+    collect_internal_ips,
     collect_metrics,
     get_agent_version,
     get_os_info,
@@ -185,6 +186,7 @@ class MonitorAgent:
 
         os_info = get_os_info()
         metrics = collect_metrics(net=self.net_collector)
+        internal_ips = collect_internal_ips()
 
         # El backend espera camelCase. Mapear:
         payload = {
@@ -201,6 +203,7 @@ class MonitorAgent:
             "networkRxBps":   metrics.get("network_rx_bps"),
             "networkTxBps":   metrics.get("network_tx_bps"),
             "uptimeSeconds":  metrics.get("uptime_seconds"),
+            "internalIps":    internal_ips if internal_ips else None,
             "collectedAt":    datetime.now(timezone.utc).isoformat(),
         }
 
