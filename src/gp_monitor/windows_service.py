@@ -116,13 +116,13 @@ def install_service(config_path: Optional[Path] = None) -> int:
     import win32api
     import pywintypes
 
-    # Determinar python.exe y el path de config para pasarlos al servicio
-    python_exe = sys.executable
-    # argv[0] es el módulo entry-point; si está frozen, usar el exe directamente
+    # pythonClassString le dice a pywin32 qué módulo y clase instanciar.
+    # pywin32 arma la linea de comandos del servicio usando:
+    #   pythonservice.exe <exeName> <pythonClassString>
+    # Por eso exeName debe ser SOLO el path al interprete Python (sys.executable),
+    # NO una linea con flags o modulo.
     service_module = "gp_monitor.windows_service"
-    config_arg = f'--config "{config_path}"' if config_path else ""
-
-    cmd = f'"{python_exe}" -m {service_module} {config_arg}'.strip()
+    config_arg = f' --config "{config_path}"' if config_path else ""
 
     try:
         win32serviceutil.InstallService(
@@ -130,7 +130,6 @@ def install_service(config_path: Optional[Path] = None) -> int:
             serviceName=SERVICE_NAME,
             displayName=SERVICE_DISPLAY_NAME,
             description=SERVICE_DESCRIPTION,
-            exeName=cmd,
             startType=win32service.SERVICE_AUTO_START,
         )
         print(f"✓ Servicio '{SERVICE_NAME}' instalado.")
