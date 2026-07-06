@@ -45,9 +45,10 @@ http_timeout_seconds: 15
 # Nivel: DEBUG, INFO, WARNING, ERROR.
 log_level: "INFO"
 
-# Ruta del archivo de log (None = solo consola). En producción, el servicio
-# Windows redirige stdout/stderr a un archivo.
-log_file: null
+# Ruta del archivo de log. Recomendado: archivo dentro de state_dir para
+# visibilidad cuando corre como servicio de Windows (sin consola).
+# null = solo stderr (no recomendado para producción, se pierden los logs).
+log_file: "C:/ProgramData/gp-monitor/gp-monitor.log"
 
 # ─── Persistencia local ───────────────────────────────────────────────────────
 # Directorio donde se guardan uuid, api_key y último heartbeat.

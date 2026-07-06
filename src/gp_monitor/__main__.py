@@ -88,7 +88,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"✗ Error cargando configuración: {exc}", file=sys.stderr)
         return 2
 
-    _setup_logging(config.log_level, config.log_file)
+    # Si el config no define log_file, default a <state_dir>/gp-monitor.log.
+    # Asi siempre hay un archivo visible cuando corre como servicio de Windows
+    # (donde stderr normalmente se descarta).
+    log_file = config.log_file
+    if not log_file:
+        try:
+            default_log = config.state_dir_path() / "gp-monitor.log"
+            default_log.parent.mkdir(parents=True, exist_ok=True)
+            log_file = str(default_log)
+        except OSError:
+            pass  # fallback a solo stderr
+
+    _setup_logging(config.log_level, log_file)
     logger = logging.getLogger("gp_monitor.cli")
 
     if args.command == "run":
