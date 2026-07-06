@@ -46,23 +46,38 @@ def _pywin32_available() -> bool:
         return False
 
 
-# ─── Implementación del servicio (subclase de Win32Service) ──────────────────
+# Importar win32serviceutil a nivel de módulo para que GpMonitorWindowsService
+# pueda heredar de ServiceFramework sin que la clase se evalúe en tiempo de
+# import cuando pywin32 no esté disponible.
+if _pywin32_available():
+    import win32serviceutil as _win32serviceutil  # noqa: F401
+else:
+    _win32serviceutil = None  # type: ignore[assignment]
 
-class GpMonitorWindowsService:
-    """Implementación concreta del servicio. Se registra con win32serviceutil."""
+
+class GpMonitorWindowsService:  # type: ignore[no-redef]
+    """Implementación concreta del servicio.
+
+    IMPORTANTE: debe heredar de ServiceFramework. Esa clase base hace dos
+    cosas críticas en __init__:
+      1. Registra el handler de control del SCM (sin esto, el SCM no
+         puede pausar/reanudar/parar el servicio y tira el error
+         "The Python class did not register a service control handler").
+      2. Provee el método legacy SvcRun() que delega a SvcDoRun() — si no
+         heredamos, pywin32 busca SvcRun y falla con AttributeError
+         (porque los nombres EXACTOS que busca son SvcRun y/o SvcDoRun).
+    """
 
     _svc_name_ = SERVICE_NAME
     _svc_display_name_ = SERVICE_DISPLAY_NAME
     _svc_description_ = SERVICE_DESCRIPTION
 
     def __init__(self, *args) -> None:
-        # pywin32's pythonservice.exe invoca el constructor pasando
-        # siempre un argumento (None o el arg vector). Aceptamos *args
-        # para ser compatibles con esa convención.
-        if not _pywin32_available():
-            raise RuntimeError("pywin32 no disponible")
+        # pythonservice.exe siempre pasa argumentos al constructor.
+        # ServiceFramework.__init__ los necesita para registrar el handler.
+        win32serviceutil.ServiceFramework.__init__(self, *args)
+        self._agent = None
 
-    # pywin32 llama estos nombres exactos
     def SvcDoRun(self) -> None:                             # noqa: N802
         import servicemanager
         from gp_monitor.agent import MonitorAgent
@@ -137,6 +152,13 @@ def install_service(config_path: Optional[Path] = None) -> int:
         print(f"  Auto-arranca con Windows.")
         return 0
     except pywintypes.error as exc:
+        # 1073 = ERROR_SERVICE_EXISTS — el servicio ya está registrado.
+        # En ese caso el operador probablemente solo quiere re-registrar
+        # (por ejemplo tras un upgrade del paquete). Lo tratamos como OK.
+        if getattr(exc, "winerror", None) == 1073:
+            print(f"✓ Servicio '{SERVICE_NAME}' ya estaba registrado.")
+            print(f"  Para (re)arrancarlo: gp-monitor stop && gp-monitor start")
+            return 0
         print(f"✗ Error instalando servicio: {exc}")
         return 1
 
