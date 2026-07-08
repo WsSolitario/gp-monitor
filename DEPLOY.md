@@ -401,3 +401,96 @@ copy config\config.example.yaml config\config.yaml
 ```
 
 Y verificar en `https://panel.ssdevsolutions.com/dashboard/monitor` en 60 segundos.
+
+---
+
+## 11. Funcionalidades nuevas (Tier 1+2: Control + Alertas)
+
+### Control remoto (Tier 1+2+3)
+
+Desde el detail page de un nodo, seccion "Acciones Remotas":
+
+**Acciones rapidas (Fase 3):**
+- Top procesos CPU / RAM
+- Espacio en disco
+- Servicios detenidos
+- Eventos de error recientes (System log, 24h)
+- Reiniciar servicio especifico (input + confirm)
+
+**Comandos libres (RunCommand):**
+- Textarea para escribir cualquier comando PowerShell
+- Toggle "Ejecutar como comando libre" (omite la allowlist)
+- Si esta activo, dialog amarillo pide escribir el hostname del server para confirmar
+- Boton "Confirmar y ejecutar" solo se habilita cuando hostConfirm === node.hostname
+
+**Allowlist (`policy.toml` en el agente):**
+- 25 patrones pre-armados (Get-Process, Get-Service, Get-Disk, Get-NetTCPConnection, etc.)
+- Editar `policy.toml` para agregar/quitar comandos
+- El agente rechaza comandos fuera de la allowlist con `allow_arbitrary=False`
+- Si el agente no tiene `policy.toml`, allowlist queda vacia y TODOS los free-form son rechazados
+
+**Auditoria completa:**
+- Cada comando logueado en `monitor_node_audit_logs` con usuario, timestamp, IP, output
+- Retencion 90 dias via `MONITOR_RETENTION_DAYS` (configurable via env)
+
+### Alertas (Tier 4+5+6)
+
+**Reglas (por nodo):**
+- Metricas: cpu_usage, memory_usage, disk_usage, heartbeat_missing
+- Operadores: >, <, >=, <=, ==, !=
+- Severidad: info, warning, critical
+- Duracion sostenida (s): la condicion debe mantenerse ese tiempo
+- Cooldown (s): minimo tiempo entre eventos de la misma regla (anti-spam)
+- Canales: email (Brevo), webhook:URL
+
+**Configuracion desde el dashboard:**
+- `/dashboard/monitor/[id]/alertas` — gestion de reglas del nodo
+- `/dashboard/monitor/alertas` — vista global con filtros
+- Badge rojo pulsante en el sidebar (count de firing, polling 30s)
+- Boton "Reconocer" en cada alerta firing
+
+**Notificaciones (Fase 5):**
+- Email via Brevo: configurar `ALERT_EMAIL_RECIPIENTS` (CSV) en gp-it/.env
+- Webhook generico: cualquier URL HTTP/HTTPS, payload JSON con event/rule/node
+- 3 reintentos con backoff exponencial (1s, 2s, 4s) para webhooks
+- Webhook 4xx no reintenta (cliente error), 5xx si
+- Plantilla HTML de email con severity color, mensaje, link al dashboard
+
+**Endpoints backend relevantes (Fase 4+5):**
+```
+POST  /api/v1/monitor/nodes/:id/commands                  # encolar (admin)
+GET   /api/v1/monitor/nodes/:id/commands                  # historial
+GET   /api/v1/monitor/nodes/:id/commands/:taskUuid      # estado+output
+GET   /api/v1/monitor/nodes/:id/tasks/pending           # agent-only
+POST  /api/v1/monitor/nodes/:uuid/tasks/:taskUuid/result  # agent-only
+GET   /api/v1/monitor/nodes/:id/alert-rules            # listar reglas
+POST  /api/v1/monitor/nodes/:id/alert-rules            # crear
+PATCH /api/v1/monitor/alert-rules/:ruleId             # editar
+DELETE /api/v1/monitor/alert-rules/:ruleId            # eliminar
+GET   /api/v1/monitor/alert-events?status=firing       # lista global
+POST  /api/v1/monitor/alert-events/:id/acknowledge    # reconocer
+```
+
+**Permisos requeridos (seed):**
+```
+monitor.execute_command   # ejecutar comandos (allowlist)
+monitor.execute_arbitrary  # ejecutar comandos libres (default solo admin)
+monitor.alerts.manage      # CRUD de reglas + acknowledge
+monitor.view              # ver (incluido en admin/operator/auditor/lector)
+```
+
+**Worker de evaluacion (Fase 4):**
+- Corre cada 30s (`EVAL_INTERVAL_MS` en `alert-evaluator.service.js`)
+- Para cada regla enabled, lee el ultimo heartbeat, evalua la condicion
+- Si cumple por `duration_seconds` y no hay evento firing dentro de `cooldown_seconds`, crea evento + dispara notificaciones
+- Si la condicion se resuelve, marca el ultimo evento firing como resolved
+
+**Retention job (Fase 6):**
+- Corre cada 24h (`RUN_INTERVAL_MS` en `retention.service.js`)
+- Borra:
+  - `monitor_node_tasks` con status IN (succeeded, failed, cancelled) y finished_at viejo
+  - `monitor_alert_events` con status IN (acknowledged, resolved) y fired_at viejo
+  - `monitor_node_heartbeats` con created_at viejo (mas restrictivo, son muchas filas)
+- Configuracion via env:
+  - `MONITOR_RETENTION_DAYS` (default 90)
+  - `MONITOR_HEARTBEAT_KEEP_DAYS` (default 30)
