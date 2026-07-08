@@ -35,10 +35,11 @@ class MonitorClient:
     """
 
     def __init__(self, api_url: str, timeout: int = DEFAULT_TIMEOUT,
-                 verify_ssl: bool = True) -> None:
+             verify_ssl: bool = True, api_key: str = "") -> None:
         self.api_url = api_url.rstrip("/")
         self.timeout = timeout
         self.verify_ssl = verify_ssl
+        self.api_key = api_key
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": USER_AGENT,
@@ -105,3 +106,30 @@ class MonitorClient:
             return resp.json()
         except requests.RequestException as exc:
             raise MonitorApiError(f"Error de red en /health: {exc}") from exc
+
+    # ─── Tasks (poll de comandos remotos) ───────────────────────────────────
+    def get_pending_tasks(self, node_uuid: str) -> list:
+        url = self._url(f"/api/v1/monitor/nodes/{node_uuid}/tasks/pending")
+        try:
+            resp = self._session.get(
+                url, timeout=self.timeout, verify=self.verify_ssl,
+                headers={"x-monitor-api-key": self.api_key},
+            )
+            self._raise_for_api_error(resp)
+            data = resp.json()
+            return data.get("tasks", [])
+        except requests.RequestException as exc:
+            raise MonitorApiError(f"Error de red en get_pending_tasks: {exc}") from exc
+
+    def post_task_result(self, node_uuid: str, task_uuid: str, payload: dict) -> dict:
+        url = self._url(f"/api/v1/monitor/nodes/{node_uuid}/tasks/{task_uuid}/result")
+        try:
+            resp = self._session.post(
+                url, json=payload, timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={"x-monitor-api-key": self.api_key},
+            )
+            self._raise_for_api_error(resp)
+            return resp.json()
+        except requests.RequestException as exc:
+            raise MonitorApiError(f"Error de red en post_task_result: {exc}") from exc

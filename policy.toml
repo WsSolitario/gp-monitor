@@ -1,0 +1,129 @@
+# gp-monitor command allowlist
+#
+# Este archivo define los comandos PowerShell que el agente puede ejecutar
+# cuando el operador envia un task type='RunCommand' SIN allow_arbitrary.
+#
+# Cada patron es un prefijo (sin case sensitive). El comando debe EMPEZAR
+# con uno de estos patrones. Ejemplo: "Get-Process | Select Name" matchea
+# "Get-Process*".
+#
+# Para agregar un comando seguro:
+#   [[allowed]]
+#   pattern = "Comando-Seguro*"
+#   description = "Descripcion legible para el dashboard"
+#
+# ⚠️  PELIGRO: cualquier cambio aqui se aplica al agente sin reinicio.
+#   Editar con cuidado. Cambios que agreguen comandos peligrosos son
+#   responsabilidad del operador.
+#
+# Comandos que NUNCA se deben agregar (peligro de seguridad):
+#   - Restart-Computer
+#   - Remove-Item con path C:\*
+#   - Format-Volume
+#   - Stop-Service con servicios criticos
+#   - Invoke-WebRequest a URLs externas (data exfiltration)
+#   - Set-ItemProperty en claves del sistema
+
+[[allowed]]
+pattern = "Get-Process*"
+description = "Listar procesos del sistema"
+
+[[allowed]]
+pattern = "Get-Service*"
+description = "Listar servicios de Windows"
+
+[[allowed]]
+pattern = "Get-Disk*"
+description = "Informacion de discos y particiones"
+
+[[allowed]]
+pattern = "Get-Volume*"
+description = "Volumenes del filesystem"
+
+[[allowed]]
+pattern = "Get-NetTCPConnection*"
+description = "Conexiones TCP activas"
+
+[[allowed]]
+pattern = "Get-NetAdapter*"
+description = "Adaptadores de red"
+
+[[allowed]]
+pattern = "Get-NetIPAddress*"
+description = "Configuracion IP"
+
+[[allowed]]
+pattern = "Get-EventLog*"
+description = "Eventos del system/application log (limitado)"
+
+[[allowed]]
+pattern = "Get-Counter*"
+description = "Contadores de performance (CPU, mem, disk IO, etc.)"
+
+[[allowed]]
+pattern = "Get-ChildItem*"
+description = "Listar archivos/directorios (solo lectura)"
+
+[[allowed]]
+pattern = "Get-Content*"
+description = "Leer contenido de archivos (solo lectura)"
+
+[[allowed]]
+pattern = "Test-Path*"
+description = "Verificar existencia de paths"
+
+[[allowed]]
+pattern = "Get-Item*"
+description = "Obtener metadata de archivos/registry (solo lectura)"
+
+[[allowed]]
+pattern = "Get-Date*"
+description = "Fecha y hora del sistema"
+
+[[allowed]]
+pattern = "Get-HotFix*"
+description = "Lista de parches instalados"
+
+[[allowed]]
+pattern = "Get-WmiObject*"
+description = "WMI queries (CPU, mem, BIOS, etc.)"
+
+[[allowed]]
+pattern = "Get-CimInstance*"
+description = "CIM queries (sucesor moderno de WMI)"
+
+[[allowed]]
+pattern = "Get-ScheduledTask*"
+description = "Tareas programadas"
+
+[[allowed]]
+pattern = "Restart-Service*"
+description = "Reiniciar un servicio (peligroso: validar nombre)"
+
+[[allowed]]
+pattern = "Start-Service*"
+description = "Iniciar un servicio (peligroso: validar nombre)"
+
+[[allowed]]
+pattern = "Stop-Service*"
+description = "Detener un servicio (peligroso: validar nombre)"
+
+[[allowed]]
+pattern = "Clear-EventLog*"
+description = "Limpiar un event log (requiere admin)"
+
+[[allowed]]
+pattern = "ipconfig*"
+description = "Configuracion de red (ipconfig)"
+
+[[allowed]]
+pattern = "systeminfo*"
+description = "Informacion del sistema (systeminfo)"
+
+[[allowed]]
+pattern = "whoami*"
+description = "Usuario actual y grupos"
+
+[[allowed]]
+pattern = "hostname*"
+description = "Nombre del equipo"

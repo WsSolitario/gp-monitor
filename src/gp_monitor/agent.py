@@ -86,13 +86,23 @@ class MonitorAgent:
         setup_logging(config.log_level, config.log_file, config.state_dir_path())
 
         self.config = config
-        self.client = client or MonitorClient(
-            api_url=config.api_url,
-            timeout=config.http_timeout_seconds,
-        )
+        # Pasamos la api_key al cliente para que pueda usarla en los
+        # endpoints de tasks (que requieren x-monitor-api-key).
+        from gp_monitor.api_client import MonitorClient as _MC
+        if client is None:
+            self.client = _MC(
+                api_url=config.api_url,
+                timeout=config.http_timeout_seconds,
+            )
+        else:
+            self.client = client
         self.state_dir = config.state_dir_path()
         self.state: Optional[AgentState] = None
         self.net_collector = NetworkRateCollector()
+
+        # Allowlist de comandos (Fase 1)
+        from gp_monitor.allowlist import CommandAllowlist
+        self.allowlist = CommandAllowlist.load()
 
         self._stop_event = threading.Event()
         self._stop_event.set()  # inicializado = no corriendo
@@ -133,6 +143,11 @@ class MonitorAgent:
         else:
             logger.info("Estado cargado: uuid=%s enrolled=%s",
                         state.uuid, "sí" if state.api_key else "no")
+
+        # Propagar api_key al cliente HTTP (necesario para endpoints de tasks)
+        if state.api_key:
+            self.client.api_key = state.api_key
+
         return state
 
     def ensure_enrolled(self) -> bool:
@@ -230,6 +245,87 @@ class MonitorAgent:
         )
         return True
 
+    def poll_and_execute_tasks(self) -> None:
+        """Consulta tasks pendientes y los ejecuta uno por uno (serial).
+
+        Cada task se ejecuta en su propio thread NO: en el main thread
+        (serial, simple, predecible). Si un task tarda 5 min, bloquea
+        el heartbeat hasta 5 min. Eso es OK para v1; podemos cambiar
+        a pool despues.
+        """
+        if self.state is None or not self.state.api_key:
+            return
+
+        try:
+            tasks = self.client.get_pending_tasks(self.state.uuid)
+        except MonitorApiError as exc:
+            logger.warning("No se pudo obtener tasks pendientes: %s", exc)
+            return
+        except Exception as exc:                                # noqa: BLE001
+            logger.exception("Error inesperado consultando tasks: %s", exc)
+            return
+
+        if not tasks:
+            return
+
+        logger.info("Recibidas %d tasks pendientes", len(tasks))
+
+        # Import local para evitar circular import
+        from gp_monitor.executor import run_task
+
+        for task in tasks:
+            task_uuid = task.get("taskUuid")
+            task_type = task.get("type")
+            if not task_uuid or not task_type:
+                logger.warning("Task invalida (sin taskUuid/type): %r", task)
+                continue
+
+            logger.info("Ejecutando task %s (%s)...", task_uuid, task_type)
+            try:
+                result = run_task(
+                    task_type=task_type,
+                    payload=task.get("payload") or {},
+                    timeout=int(task.get("timeoutSeconds") or 60),
+                    command=task.get("command") or "",
+                    allow_arbitrary=bool(task.get("allowArbitrary", False)),
+                    allowlist=self.allowlist,
+                )
+            except Exception as exc:                            # noqa: BLE001
+                logger.exception("Excepcion ejecutando task %s: %s", task_uuid, exc)
+                # Postear como failed para que el dashboard lo sepa
+                try:
+                    self.client.post_task_result(self.state.uuid, task_uuid, {
+                        "status": "failed",
+                        "exitCode": -1,
+                        "durationMs": 0,
+                        "truncated": False,
+                        "stdout": "",
+                        "stderr": "",
+                        "errorMessage": f"agent exception: {exc}",
+                    })
+                except Exception:                                # noqa: BLE001
+                    logger.exception("No se pudo postear el fallo")
+                continue
+
+            # Postear resultado
+            try:
+                self.client.post_task_result(self.state.uuid, task_uuid, {
+                    "status": result.status,
+                    "exitCode": result.exit_code,
+                    "durationMs": result.duration_ms,
+                    "truncated": result.truncated,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "errorMessage": result.error_message,
+                })
+                logger.info(
+                    "Task %s completada: status=%s exit=%s dur=%sms trunc=%s",
+                    task_uuid, result.status, result.exit_code,
+                    result.duration_ms, result.truncated,
+                )
+            except MonitorApiError as exc:
+                logger.warning("No se pudo postear resultado de task %s: %s", task_uuid, exc)
+
     def run(self) -> int:
         """Loop principal. Devuelve exit code."""
         self._setup_signals()
@@ -240,6 +336,7 @@ class MonitorAgent:
         logger.info("API: %s", self.config.api_url)
         logger.info("Nodo: %s (uuid=%s)", self.config.resolved_hostname, "(cargando)")
         logger.info("Heartbeat cada %ss", self.config.heartbeat_interval_seconds)
+        logger.info("Allowlist: %d comandos", len(self.allowlist))
         logger.info("=" * 60)
 
         self.state = self.load_or_create_state()
@@ -269,6 +366,14 @@ class MonitorAgent:
                 self.send_one_heartbeat()
             except Exception as exc:                        # noqa: BLE001
                 logger.exception("Excepción inesperada en send_one_heartbeat: %s", exc)
+
+            # Poll de tasks remotos. Si hay pendientes, ejecuta serial.
+            # El heartbeat ya incremento la cuenta de ciclos, asi que el
+            # task poll no debe interferir con el intervalo.
+            try:
+                self.poll_and_execute_tasks()
+            except Exception as exc:                        # noqa: BLE001
+                logger.exception("Excepción inesperada en poll_and_execute_tasks: %s", exc)
 
             self._sleep_or_stop(self.config.heartbeat_interval_seconds)
 
