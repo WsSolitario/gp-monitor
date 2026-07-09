@@ -73,12 +73,19 @@ class CommandAllowlist:
             description = (item.get("description") or "").strip()
             if not pattern:
                 continue
-            # Coincide si el comando (trimmed + lowercase) empieza con
-            # `pattern` o `pattern + ' '`. Esto evita que "Get-ProcessMalware"
-            # matchee "Get-Process".
+            # Convencion: si el patron termina en '*', se interpreta como
+            # prefijo (matchea cualquier comando que EMPIECE con pattern sin
+            # el *). Sin '*', matchea solo comandos que EMPIEZAN con pattern
+            # seguido de espacio o fin de string. Esto evita que 'Get'
+            # matchee 'Get-ProcessMalware' y a la vez permite 'Get-Process*'
+            # para cualquier variante (Get-Process, Get-Process | Sort, etc.)
             try:
+                if pattern.endswith('*'):
+                    regex_body = re.escape(pattern[:-1]) + r'.*'
+                else:
+                    regex_body = re.escape(pattern) + r'(\s|$)'
                 regex = re.compile(
-                    r"^\s*" + re.escape(pattern) + r"(\s|$)",
+                    r'^\s*' + regex_body,
                     re.IGNORECASE | re.DOTALL,
                 )
             except re.error as exc:
