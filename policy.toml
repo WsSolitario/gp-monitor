@@ -3,9 +3,11 @@
 # Este archivo define los comandos PowerShell que el agente puede ejecutar
 # cuando el operador envia un task type='RunCommand' SIN allow_arbitrary.
 #
-# Cada patron es un prefijo (sin case sensitive). El comando debe EMPEZAR
-# con uno de estos patrones. Ejemplo: "Get-Process | Select Name" matchea
-# "Get-Process*".
+# Convencion: si el patron TERMINA en '*', se interpreta como PREFIJO
+# (matchea cualquier comando que EMPIECE con el texto antes del '*', con
+# cualquier cosa que siga, incluso un argumento pegado sin espacio).
+# Si NO termina en '*', requiere un espacio o fin de string despues
+# (estricto, evita falsos positivos como 'Get' matcheando 'Get-Process').
 #
 # Para agregar un comando seguro:
 #   [[allowed]]
@@ -24,6 +26,7 @@
 #   - Invoke-WebRequest a URLs externas (data exfiltration)
 #   - Set-ItemProperty en claves del sistema
 
+# ─── Comandos basicos de inspeccion ────────────────────────────────────────
 [[allowed]]
 pattern = "Get-Process*"
 description = "Listar procesos del sistema"
@@ -127,3 +130,248 @@ description = "Usuario actual y grupos"
 [[allowed]]
 pattern = "hostname*"
 description = "Nombre del equipo"
+
+# ─── Monitoreo y diagnostico (plantilla sugerida) ─────────────────────────
+# Comandos read-only utiles para diagnosticar problemas desde el dashboard.
+# Ideales para responder rapido: 'cuanta RAM hay?', 'quien esta usando
+# el puerto X?', 'cuando se reinicio el server?', etc.
+
+[[allowed]]
+pattern = "Get-PSDrive*"
+description = "Unidades de disco con uso (FileSystem)"
+
+[[allowed]]
+pattern = "Get-PhysicalDisk*"
+description = "Discos fisicos (SMART, health, modelo)"
+
+[[allowed]]
+pattern = "Get-StorageReliabilityCounter*"
+description = "Contadores de confiabilidad de almacenamiento"
+
+[[allowed]]
+pattern = "Get-ComputerInfo*"
+description = "Info completa del sistema (RAM, CPU, OS, BIOS)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_Processor*"
+description = "Detalle de CPU (modelo, cores, threads)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_PhysicalMemory*"
+description = "Modulos de RAM instalados"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_ComputerSystem*"
+description = "Hardware summary (manufacturer, model, RAM total)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_LogicalDisk*"
+description = "Info de discos logicos via WMI"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_OperatingSystem*"
+description = "Info del OS (version, install date, last boot)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_BIOS*"
+description = "Info de BIOS (version, serial number)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_Process*"
+description = "Todos los procesos con detalles WMI"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_Service*"
+description = "Todos los servicios con detalles WMI"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_OperatingSystem*"
+description = "OS info (alias para evitar duplicado)"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_LogonSession*"
+description = "Sesiones de login activas"
+
+[[allowed]]
+pattern = "Get-CimInstance Win32_OperatingSystem*"
+description = "OS info (alias para Get-CimInstance)"
+
+[[allowed]]
+pattern = "Get-NetIPConfiguration*"
+description = "Configuracion IP completa (interfaces, DNS, gateway)"
+
+[[allowed]]
+pattern = "Get-NetRoute*"
+description = "Tabla de ruteo"
+
+[[allowed]]
+pattern = "Get-NetAdapter*"
+description = "Adaptadores de red (estado, velocidad, MAC, driver)"
+
+[[allowed]]
+pattern = "Get-NetTCPConnection*"
+description = "Conexiones TCP activas (alias)"
+
+[[allowed]]
+pattern = "Get-NetUDPEndpoint*"
+description = "Endpoints UDP activos"
+
+[[allowed]]
+pattern = "Get-NetFirewallProfile*"
+description = "Estado de los perfiles de firewall (Domain/Private/Public)"
+
+[[allowed]]
+pattern = "Get-NetFirewallRule*"
+description = "Reglas de firewall configuradas"
+
+[[allowed]]
+pattern = "Get-NetFirewallProfile*"
+description = "Perfiles de firewall (alias)"
+
+[[allowed]]
+pattern = "Resolve-DnsName*"
+description = "Resolver nombre DNS (NSlookup moderno)"
+
+[[allowed]]
+pattern = "Test-NetConnection*"
+description = "Test de conectividad a host:puerto (abre socket breve)"
+
+[[allowed]]
+pattern = "Get-DnsClientCache*"
+description = "Cache DNS del cliente (resolver local)"
+
+[[allowed]]
+pattern = "Get-NetIPAddress*"
+description = "Direcciones IP configuradas (alias)"
+
+[[allowed]]
+pattern = "Get-WinEvent*"
+description = "Lector moderno de Event Log (System/Application/Security)"
+
+[[allowed]]
+pattern = "Get-WinEvent -LogName System*"
+description = "Eventos del log System (filtrar por log)"
+
+[[allowed]]
+pattern = "Get-WinEvent -LogName Application*"
+description = "Eventos del log Application (filtrar por log)"
+
+[[allowed]]
+pattern = "Get-WinEvent -FilterHashtable*"
+description = "Eventos con filtro avanzado (level, provider, time)"
+
+[[allowed]]
+pattern = "Get-ScheduledTask*"
+description = "Tareas programadas (alias)"
+
+[[allowed]]
+pattern = "Get-ScheduledTaskInfo*"
+description = "Info de ejecucion de una tarea programada"
+
+[[allowed]]
+pattern = "Get-WindowsUpdate*"
+description = "Actualizaciones pendientes (requiere modulo PSWindowsUpdate)"
+
+[[allowed]]
+pattern = "Get-WUList*"
+description = "Lista de updates pendientes (alias legacy)"
+
+[[allowed]]
+pattern = "Get-WUInstall*"
+description = "Updates a instalar (peligroso: solo listar)"
+
+[[allowed]]
+pattern = "Get-ChildItem Cert*"
+description = "Listar certificados del store del equipo"
+
+[[allowed]]
+pattern = "Get-Certificate*"
+description = "Detalle de un certificado especifico"
+
+[[allowed]]
+pattern = "Get-NetFirewallProfile*"
+description = "Perfiles de firewall (alias)"
+
+[[allowed]]
+pattern = "Get-TimeZone*"
+description = "Info de zona horaria del sistema"
+
+[[allowed]]
+pattern = "Get-Culture*"
+description = "Info de cultura/locale del sistema"
+
+[[allowed]]
+pattern = "Get-Random*"
+description = "Random (util para testing de carga)"
+
+[[allowed]]
+pattern = "Get-Random*"
+description = "Random (alias)"
+
+[[allowed]]
+pattern = "netstat*"
+description = "netstat (conexiones y estadisticas de red)"
+
+[[allowed]]
+pattern = "nslookup*"
+description = "DNS lookup interactivo (legacy)"
+
+[[allowed]]
+pattern = "tracert*"
+description = "Trazar ruta a un host (debugging de red)"
+
+[[allowed]]
+pattern = "pathping*"
+description = "Combina ping + tracert con estadisticas"
+
+[[allowed]]
+pattern = "arp*"
+description = "Tabla ARP (mapeo IP <-> MAC en LAN)"
+
+[[allowed]]
+pattern = "route*"
+description = "Tabla de ruteo (route print)"
+
+[[allowed]]
+pattern = "net user*"
+description = "Listar usuarios locales (sin password)"
+
+[[allowed]]
+pattern = "net localgroup*"
+description = "Listar grupos locales"
+
+[[allowed]]
+pattern = "net session*"
+description = "Listar sesiones SMB activas"
+
+[[allowed]]
+pattern = "net share*"
+description = "Listar shares SMB"
+
+[[allowed]]
+pattern = "net use*"
+description = "Listar conexiones montadas (peligroso: solo lectura)"
+
+[[allowed]]
+pattern = "Get-SmbSession*"
+description = "Sesiones SMB activas (PowerShell moderno)"
+
+[[allowed]]
+pattern = "Get-SmbOpenFile*"
+description = "Archivos abiertos via SMB"
+
+[[allowed]]
+pattern = "Get-SmbShare*"
+description = "Shares SMB del server"
+
+[[allowed]]
+pattern = "Get-SmbServerConfiguration*"
+description = "Configuracion del server SMB"
+
+[[allowed]]
+pattern = "Get-BitLockerVolume*"
+description = "Estado de encriptacion BitLocker de los volumenes"
+
+[[allowed]]
+pattern = "Get-WinEvent -LogName Security*"
+description = "Eventos del log Security (auditoria)"
