@@ -130,79 +130,73 @@ def test_load_missing_file():
     assert al.is_allowed("Get-Process") is False
 
 
-# ─── Tests del parser de query session ──────────────────────────────────
+# ─── Tests del collector RDP via WTSAPI ───────────────────────────────────
 
-from gp_monitor.collectors import _parse_query_session_line  # noqa: E402
-
-
-def test_query_session_english_console():
-    parsed = _parse_query_session_line(
-        ">console           administrator     1  Active      none   6/7/2026 12:00:00"
-    )
-    assert parsed is not None
-    assert parsed["username"] == "administrator"
-    assert parsed["session_name"] == "console"
-    assert parsed["session_id"] == 1
-    assert parsed["state"] == "Active"
-    assert parsed["is_active"] is True
-    assert parsed["is_rdp"] is False
-    assert parsed["session_type"] == "console"
+from gp_monitor.collectors import _get_sessions_via_wtsapi  # noqa: E402
 
 
-def test_query_session_english_rdp():
-    parsed = _parse_query_session_line(
-        "                   jdoe              2  Disc       00:05    6/7/2026 11:00:00"
-    )
-    assert parsed is not None
-    assert parsed["username"] == "jdoe"
-    assert parsed["session_id"] == 2
-    assert parsed["state"] == "Disc"
-    assert parsed["is_active"] is False
-    # session_name vacio -> no es RDP ni console
-    assert parsed["is_rdp"] is False
+def test_wtsapi_available():
+    """El modulo wtsapi32 debe estar disponible en Windows."""
+    import platform
+    if platform.system() != 'Windows':
+        return  # skip en linux/mac
+    import ctypes
+    try:
+        ctypes.WinDLL('wtsapi32.dll')
+        assert True
+    except OSError:
+        assert False, "wtsapi32.dll no encontrado"
 
 
-def test_query_session_spanish():
-    parsed = _parse_query_session_line(
-        ">consola           usuario1         10  Conectado   00:01    6/7/2026 09:00:00"
-    )
-    assert parsed is not None
-    assert parsed["username"] == "usuario1"
-    assert parsed["session_id"] == 10
-    assert parsed["state"] == "Conectado"
-    assert parsed["is_active"] is True
-    assert parsed["session_type"] == "consola"  # espanol == console
+def test_rdp_sessions_basic_shape():
+    """get_rdp_sessions devuelve siempre users y rdp_connections (arrays)."""
+    import platform
+    if platform.system() != 'Windows':
+        return  # skip
+    from gp_monitor.collectors import get_rdp_sessions
+    data = get_rdp_sessions()
+    assert isinstance(data, dict)
+    assert 'users' in data
+    assert 'rdp_connections' in data
+    assert isinstance(data['users'], list)
+    assert isinstance(data['rdp_connections'], list)
 
 
-def test_query_session_rdp_tcp_filtered():
-    """Las sesiones rdp-tcp#N (listeners) deben filtrarse."""
-    parsed = _parse_query_session_line(
-        "                   rdp-tcp#0          3  Escuchando"
-    )
-    assert parsed is None  # filtrado: rdp-tcp#X
+def test_rdp_sessions_filters_services():
+    """Los servicios y listeners RDP no deben aparecer en users."""
+    import platform
+    if platform.system() != 'Windows':
+        return
+    from gp_monitor.collectors import _get_sessions_via_wtsapi
+    users = _get_sessions_via_wtsapi()
+    for u in users:
+        # Ningun servicio/listener RDP debe colarse
+        assert u.get('username', '').lower() not in ('services', 'local service', 'system'), \
+            f"Servicio filtrado incorrectamente: {u.get('username')}"
+        sn = u.get('session_name', '').lower()
+        assert not sn.startswith('rdp-tcp'), \
+            f"Listener RDP colado: {u.get('session_name')}"
 
 
-def test_query_session_services_filtered():
-    """Las sesiones 'services' (System) deben filtrarse."""
-    parsed = _parse_query_session_line(
-        "                   services           0  Desconectado"
-    )
-    assert parsed is None  # filtrado: username == services
+def test_rdp_sessions_has_required_keys():
+    """Cada sesion tiene los campos requeridos por el dashboard."""
+    import platform
+    if platform.system() != 'Windows':
+        return
+    from gp_monitor.collectors import _get_sessions_via_wtsapi
+    users = _get_sessions_via_wtsapi()
+    for u in users:
+        for key in ('username', 'session_id', 'state', 'is_active', 'is_rdp'):
+            assert key in u, f"Falta key {key} en sesion {u}"
+        assert isinstance(u['session_id'], int)
+        assert isinstance(u['is_active'], bool)
+        assert isinstance(u['is_rdp'], bool)
 
 
-def test_query_session_empty_line():
-    assert _parse_query_session_line("") is None
-    assert _parse_query_session_line("   ") is None
-
-
-def test_query_session_state_variants():
-    """Acepta variantes en espanol e ingles."""
-    for state_str, expected_active in [
-        ("Active", True), ("Conectado", True), ("Activo", True),
-        ("Disc", False), ("Disconnected", False), ("Desconectado", False),
-    ]:
-        parsed = _parse_query_session_line(
-            f"                   user{state_str.replace(' ', '')}  99  {state_str}       00:00    6/7/2026 12:00:00"
-        )
-        if parsed is not None:
-            assert parsed["is_active"] == expected_active, f"state={state_str}"
+def test_rdp_sessions_returns_empty_on_non_windows():
+    """En linux/mac, el collector devuelve lista vacia sin crashear."""
+    from unittest.mock import patch
+    with patch('gp_monitor.collectors.os.name', 'posix'):
+        from gp_monitor.collectors import _get_sessions_via_wtsapi
+        result = _get_sessions_via_wtsapi()
+        assert result == []
