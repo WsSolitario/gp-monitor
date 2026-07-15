@@ -233,6 +233,19 @@ class MonitorAgent:
             "collectedAt":    datetime.now(timezone.utc).isoformat(),
         }
 
+        # Log INFO para que el operador verifique desde el log que la logica
+        # nueva corre (count + tipos de sesion). Una linea por heartbeat
+        # no es ruidosa (a 60s por defecto = 1 linea/min).
+        users_count = len(rdp.get("users") or [])
+        conns_count = len(rdp.get("rdp_connections") or [])
+        rdp_users = rdp.get("users") or []
+        rdp_active = sum(1 for u in rdp_users if u.get("is_active"))
+        rdp_sessions = sum(1 for u in rdp_users if u.get("is_rdp"))
+        logger.info(
+            "RDP: %d users (%d active, %d RDP), %d connections",
+            users_count, rdp_active, rdp_sessions, conns_count,
+        )
+
         try:
             self.client.send_heartbeat(self.state.uuid, self.state.api_key, payload)
         except MonitorApiError as exc:
