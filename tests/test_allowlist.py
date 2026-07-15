@@ -128,3 +128,81 @@ def test_load_missing_file():
     al = CommandAllowlist.load(explicit_path=Path("/no/existe/policy.toml"))
     assert len(al) == 0
     assert al.is_allowed("Get-Process") is False
+
+
+# ─── Tests del parser de query session ──────────────────────────────────
+
+from gp_monitor.collectors import _parse_query_session_line  # noqa: E402
+
+
+def test_query_session_english_console():
+    parsed = _parse_query_session_line(
+        ">console           administrator     1  Active      none   6/7/2026 12:00:00"
+    )
+    assert parsed is not None
+    assert parsed["username"] == "administrator"
+    assert parsed["session_name"] == "console"
+    assert parsed["session_id"] == 1
+    assert parsed["state"] == "Active"
+    assert parsed["is_active"] is True
+    assert parsed["is_rdp"] is False
+    assert parsed["session_type"] == "console"
+
+
+def test_query_session_english_rdp():
+    parsed = _parse_query_session_line(
+        "                   jdoe              2  Disc       00:05    6/7/2026 11:00:00"
+    )
+    assert parsed is not None
+    assert parsed["username"] == "jdoe"
+    assert parsed["session_id"] == 2
+    assert parsed["state"] == "Disc"
+    assert parsed["is_active"] is False
+    # session_name vacio -> no es RDP ni console
+    assert parsed["is_rdp"] is False
+
+
+def test_query_session_spanish():
+    parsed = _parse_query_session_line(
+        ">consola           usuario1         10  Conectado   00:01    6/7/2026 09:00:00"
+    )
+    assert parsed is not None
+    assert parsed["username"] == "usuario1"
+    assert parsed["session_id"] == 10
+    assert parsed["state"] == "Conectado"
+    assert parsed["is_active"] is True
+    assert parsed["session_type"] == "consola"  # espanol == console
+
+
+def test_query_session_rdp_tcp_filtered():
+    """Las sesiones rdp-tcp#N (listeners) deben filtrarse."""
+    parsed = _parse_query_session_line(
+        "                   rdp-tcp#0          3  Escuchando"
+    )
+    assert parsed is None  # filtrado: rdp-tcp#X
+
+
+def test_query_session_services_filtered():
+    """Las sesiones 'services' (System) deben filtrarse."""
+    parsed = _parse_query_session_line(
+        "                   services           0  Desconectado"
+    )
+    assert parsed is None  # filtrado: username == services
+
+
+def test_query_session_empty_line():
+    assert _parse_query_session_line("") is None
+    assert _parse_query_session_line("   ") is None
+
+
+def test_query_session_state_variants():
+    """Acepta variantes en espanol e ingles."""
+    for state_str, expected_active in [
+        ("Active", True), ("Conectado", True), ("Activo", True),
+        ("Disc", False), ("Disconnected", False), ("Desconectado", False),
+    ]:
+        parsed = _parse_query_session_line(
+            f"                   user{state_str.replace(' ', '')}  99  {state_str}       00:00    6/7/2026 12:00:00"
+        )
+        if parsed is not None:
+            assert parsed["is_active"] == expected_active, f"state={state_str}"

@@ -23,7 +23,9 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import socket
+import subprocess
 import time
 from typing import Any, Dict, Optional
 
@@ -265,13 +267,107 @@ def collect_internal_ips() -> list[str]:
 
 # ─── Sesiones RDP / usuarios conectados ──────────────────────────────────────
 
+# Estados posibles en query session, normalizados a lowercase.
+# Soportamos espanol e ingles.
+_QUERY_SESSION_STATES = frozenset({
+    'active', 'disc', 'disconnected', 'down', 'idle',
+    'conectado', 'desconectado', 'inactivo', 'bloqueado',
+    'paused', 'pausado', 'remote', 'remoto',
+})
+
+
+def _parse_query_session_line(line: str) -> dict | None:
+    """Parsea una linea de salida de 'query session' (español o ingles).
+
+    Formato tipico (español):
+        NOMBRE DE SESIÓN  USUARIO         ID  ESTADO   TIEMPO INACT.  HORA DE INICIO
+        >console           administrator     1  Activo       ninguno  6/7/2026 12:00:00
+                            jdoe              2  Desconectado  00:05    6/7/2026 11:00:00
+                            rdp-tcp#0          3  Escuchando
+                            user1            10  Activo       00:01    6/7/2026 09:00:00
+
+    Formato (ingles):
+        SESSIONNAME       USERNAME        ID  STATE   IDLE TIME  LOGON TIME
+        >console           administrator     1  Active      none   6/7/2026 12:00:00
+        """
+    if not line.strip():
+        return None
+    # Quitar el prefijo '>' (sesion activa/conectada)
+    stripped = line.lstrip('>').strip()
+    if not stripped:
+        return None
+    # Split por 2+ espacios (columnas separadas por padding)
+    parts = re.split(r'\s{2,}', stripped)
+    if len(parts) < 3:
+        # Si no hay separacion multiple, intentar split por 1+ espacio
+        # y reagrupar: [sessionname, username, id, state, ...]
+        parts = stripped.split()
+        if len(parts) < 3:
+            return None
+        # Reorganizar: sessionname, username, id, state, [resto como logon time]
+        session_name = parts[0]
+        username = parts[1]
+        try:
+            session_id = int(parts[2])
+        except (ValueError, IndexError):
+            return None
+        state = parts[3] if len(parts) > 3 else 'Unknown'
+        logon_time = ' '.join(parts[4:]) if len(parts) > 4 else None
+    else:
+        session_name = parts[0].strip()
+        username = parts[1].strip()
+        try:
+            session_id = int(parts[2].strip())
+        except (ValueError, IndexError):
+            return None
+        state = parts[3].strip() if len(parts) > 3 else 'Unknown'
+        logon_time = parts[4].strip() if len(parts) > 4 else None
+
+    # Filtrar sesiones sin usuario (servicios, listeners, etc.)
+    if not username or username.lower() in ('services', 'local service'):
+        return None
+    if username.startswith('rdp-tcp#'):
+        return None
+    if session_name.lower().startswith('rdp-tcp'):
+        return None
+
+    # Normalizar estado
+    state_norm = state.strip().lower()
+    is_active = state_norm in ('active', 'conectado')
+
+    # Determinar tipo (rdp vs consola)
+    sn_low = session_name.lower()
+    if sn_low == 'console':
+        session_type = 'console'
+        is_rdp = False
+    elif 'rdp' in sn_low or sn_low.startswith('rdp-'):
+        session_type = 'rdp'
+        is_rdp = True
+    else:
+        session_type = session_name
+        is_rdp = False
+
+    return {
+        'username':    username,
+        'session_name': session_name,
+        'session_id':   session_id,
+        'state':        state,
+        'is_active':    is_active,
+        'is_rdp':       is_rdp,
+        'session_type': session_type,
+        'logon_time':   logon_time,
+        'host':         '',
+    }
+
+
 def get_rdp_sessions() -> dict:
     """Devuelve las sesiones de usuario activas y las conexiones RDP entrantes.
 
     Output shape:
     {
       'users': [
-        {username, terminal, host, started, pid, is_rdp},
+        {username, session_name, session_id, state, is_active, is_rdp,
+         session_type, logon_time, host},
         ...
       ],
       'rdp_connections': [
@@ -280,25 +376,31 @@ def get_rdp_sessions() -> dict:
       ],
     }
 
-    Locale-independent: usa psutil (no 'query session' que se traduce).
+    Implementacion: usa 'query session' (cmd.exe builtin) para listar las
+    sesiones reales, que funciona correctamente cuando el agente corre como
+    servicio (a diferencia de psutil.users() que falla bajo LocalSystem
+    en Windows). Parser tolerante a espanol/ingles.
+
     Safe de llamar: cada sub-collector tiene try/except y devuelve [].
     """
     users: list[dict] = []
     try:
-        for u in psutil.users():
-            if not u.name:
-                continue
-            is_rdp = bool(u.host and u.host not in ('', 'localhost', '0.0.0.0'))
-            users.append({
-                'username': u.name,
-                'terminal': u.terminal or '',
-                'host':     u.host or '',
-                'started':  u.started.isoformat() if u.started else None,
-                'pid':      u.pid or 0,
-                'is_rdp':   is_rdp,
-            })
-    except Exception as exc:
-        logger.debug("get_rdp_sessions: psutil.users fallo: %s", exc)
+        result = subprocess.run(
+            ['query', 'session'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            shell=False,
+        )
+        if result.returncode == 0 and result.stdout:
+            # Saltar la cabecera (2 lineas: titulo + separador)
+            lines = result.stdout.splitlines()
+            for line in lines[2:]:
+                parsed = _parse_query_session_line(line)
+                if parsed:
+                    users.append(parsed)
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
+        logger.debug("get_rdp_sessions: query session fallo: %s", exc)
 
     rdp_conns: list[dict] = []
     try:
