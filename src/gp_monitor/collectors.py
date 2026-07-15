@@ -263,6 +263,63 @@ def collect_internal_ips() -> list[str]:
     return result
 
 
+# ─── Sesiones RDP / usuarios conectados ──────────────────────────────────────
+
+def get_rdp_sessions() -> dict:
+    """Devuelve las sesiones de usuario activas y las conexiones RDP entrantes.
+
+    Output shape:
+    {
+      'users': [
+        {username, terminal, host, started, pid, is_rdp},
+        ...
+      ],
+      'rdp_connections': [
+        {local_addr, local_port, remote_addr, remote_port, pid},
+        ...
+      ],
+    }
+
+    Locale-independent: usa psutil (no 'query session' que se traduce).
+    Safe de llamar: cada sub-collector tiene try/except y devuelve [].
+    """
+    users: list[dict] = []
+    try:
+        for u in psutil.users():
+            if not u.name:
+                continue
+            is_rdp = bool(u.host and u.host not in ('', 'localhost', '0.0.0.0'))
+            users.append({
+                'username': u.name,
+                'terminal': u.terminal or '',
+                'host':     u.host or '',
+                'started':  u.started.isoformat() if u.started else None,
+                'pid':      u.pid or 0,
+                'is_rdp':   is_rdp,
+            })
+    except Exception as exc:
+        logger.debug("get_rdp_sessions: psutil.users fallo: %s", exc)
+
+    rdp_conns: list[dict] = []
+    try:
+        for c in psutil.net_connections(kind='inet'):
+            if c.laddr and c.laddr.port == 3389 and c.status == psutil.CONN_ESTABLISHED:
+                rdp_conns.append({
+                    'local_addr':  c.laddr.ip,
+                    'local_port':  c.laddr.port,
+                    'remote_addr': c.raddr.ip if c.raddr else '',
+                    'remote_port': c.raddr.port if c.raddr else 0,
+                    'pid':         c.pid or 0,
+                })
+    except (psutil.AccessDenied, OSError, Exception) as exc:
+        logger.debug("get_rdp_sessions: net_connections fallo: %s", exc)
+
+    return {
+        'users': users,
+        'rdp_connections': rdp_conns,
+    }
+
+
 # ─── API principal ────────────────────────────────────────────────────────────
 
 def collect_metrics(
