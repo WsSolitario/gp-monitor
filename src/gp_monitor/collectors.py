@@ -20,6 +20,7 @@ None y loguea. Nunca levanta excepciones al caller.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import platform
@@ -27,6 +28,7 @@ import re
 import socket
 import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import psutil
@@ -267,97 +269,280 @@ def collect_internal_ips() -> list[str]:
 
 # ─── Sesiones RDP / usuarios conectados ──────────────────────────────────────
 
-# Estados posibles en query session, normalizados a lowercase.
-# Soportamos espanol e ingles.
-_QUERY_SESSION_STATES = frozenset({
-    'active', 'disc', 'disconnected', 'down', 'idle',
-    'conectado', 'desconectado', 'inactivo', 'bloqueado',
-    'paused', 'pausado', 'remote', 'remoto',
-})
+# Constantes de la API WTSAPI32 (Windows Terminal Services).
+# Documentacion: https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/
+_WTS_CURRENT_SERVER_HANDLE = ctypes.c_void_p(0).value  # NULL = current server
+
+# WTS_CONNECTSTATE_CLASS
+_WTSActive           = 0
+_WTSConnected        = 1
+_WTSConnectQuery     = 2
+_WTSShadow           = 3
+_WTSDisconnected     = 4
+_WTSIdle             = 5
+_WTSListen           = 6
+_WTSReset            = 7
+_WTSDown             = 8
+_WTSInit             = 9
+
+# WTS_INFO_CLASS (algunos valores)
+_WTSUserName         = 5
+_WTSDomainName       = 7
+_WTSLogonTime        = 8
+_WTSClientName       = 10
+_WTSClientAddress    = 14
 
 
-def _parse_query_session_line(line: str) -> dict | None:
-    """Parsea una linea de salida de 'query session' (español o ingles).
+# Estructura WTS_SESSION_INFOW (32-bit en sistemas 32, 64-bit en 64).
+# La hacemos portable: usamos c_uint32 y c_wchar_p que se adaptan.
+class _WTS_SESSION_INFOW(ctypes.Structure):
+    _fields_ = [
+        ('SessionId',        ctypes.c_uint32),
+        ('pWinStationName',  ctypes.c_wchar_p),
+        ('State',            ctypes.c_uint32),
+    ]
 
-    Formato tipico (español):
-        NOMBRE DE SESIÓN  USUARIO         ID  ESTADO   TIEMPO INACT.  HORA DE INICIO
-        >console           administrator     1  Activo       ninguno  6/7/2026 12:00:00
-                            jdoe              2  Desconectado  00:05    6/7/2026 11:00:00
-                            rdp-tcp#0          3  Escuchando
-                            user1            10  Activo       00:01    6/7/2026 09:00:00
 
-    Formato (ingles):
-        SESSIONNAME       USERNAME        ID  STATE   IDLE TIME  LOGON TIME
-        >console           administrator     1  Active      none   6/7/2026 12:00:00
-        """
-    if not line.strip():
+# Carga wtsapi32.dll una sola vez al importar el modulo
+_wtsapi32 = None
+_WTS_SESSION_INFO_p = ctypes.POINTER(_WTS_SESSION_INFOW)
+_ppSessionInfo = ctypes.POINTER(_WTS_SESSION_INFO_p)
+_pUInt32 = ctypes.POINTER(ctypes.c_uint32)
+_pWchar = ctypes.POINTER(ctypes.c_wchar_p)
+
+
+def _init_wtsapi():
+    """Carga wtsapi32.dll y define las signatures de las funciones."""
+    global _wtsapi32
+    if _wtsapi32 is not None:
+        return _wtsapi32
+    if os.name != 'nt':
         return None
-    # Quitar el prefijo '>' (sesion activa/conectada)
-    stripped = line.lstrip('>').strip()
-    if not stripped:
-        return None
-    # Split por 2+ espacios (columnas separadas por padding)
-    parts = re.split(r'\s{2,}', stripped)
-    if len(parts) < 3:
-        # Si no hay separacion multiple, intentar split por 1+ espacio
-        # y reagrupar: [sessionname, username, id, state, ...]
-        parts = stripped.split()
-        if len(parts) < 3:
-            return None
-        # Reorganizar: sessionname, username, id, state, [resto como logon time]
-        session_name = parts[0]
-        username = parts[1]
-        try:
-            session_id = int(parts[2])
-        except (ValueError, IndexError):
-            return None
-        state = parts[3] if len(parts) > 3 else 'Unknown'
-        logon_time = ' '.join(parts[4:]) if len(parts) > 4 else None
-    else:
-        session_name = parts[0].strip()
-        username = parts[1].strip()
-        try:
-            session_id = int(parts[2].strip())
-        except (ValueError, IndexError):
-            return None
-        state = parts[3].strip() if len(parts) > 3 else 'Unknown'
-        logon_time = parts[4].strip() if len(parts) > 4 else None
+    try:
+        lib = ctypes.WinDLL('wtsapi32.dll', use_last_error=True)
 
-    # Filtrar sesiones sin usuario (servicios, listeners, etc.)
-    if not username or username.lower() in ('services', 'local service'):
-        return None
-    if username.startswith('rdp-tcp#'):
-        return None
-    if session_name.lower().startswith('rdp-tcp'):
+        # WTSEnumerateSessionsW(HANDLE, DWORD, DWORD, PWTS_SESSION_INFOW*, DWORD*)
+        WTSEnumerateSessionsW = lib.WTSEnumerateSessionsW
+        WTSEnumerateSessionsW.argtypes = [
+            ctypes.c_void_p, _pUInt32, ctypes.c_uint32, _ppSessionInfo, _pUInt32,
+        ]
+        WTSEnumerateSessionsW.restype = ctypes.c_int
+
+        # WTSQuerySessionInformationW(HANDLE, DWORD, WTS_INFO_CLASS, LPWSTR*, DWORD*)
+        WTSQuerySessionInformationW = lib.WTSQuerySessionInformationW
+        WTSQuerySessionInformationW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, _pWchar, _pUInt32,
+        ]
+        WTSQuerySessionInformationW.restype = ctypes.c_int
+
+        # WTSFreeMemory(PVOID)
+        WTSFreeMemory = lib.WTSFreeMemory
+        WTSFreeMemory.argtypes = [ctypes.c_void_p]
+        WTSFreeMemory.restype = ctypes.c_int
+
+        # Stash en el lib para que las funciones queden accesibles
+        lib.WTSEnumerateSessionsW = WTSEnumerateSessionsW
+        lib.WTSQuerySessionInformationW = WTSQuerySessionInformationW
+        lib.WTSFreeMemory = WTSFreeMemory
+
+        _wtsapi32 = lib
+        return lib
+    except (OSError, AttributeError) as exc:
+        logger.debug("No se pudo cargar wtsapi32.dll: %s", exc)
         return None
 
-    # Normalizar estado
-    state_norm = state.strip().lower()
-    is_active = state_norm in ('active', 'conectado')
 
-    # Determinar tipo (rdp vs consola)
-    sn_low = session_name.lower()
-    if sn_low == 'console':
-        session_type = 'console'
-        is_rdp = False
-    elif 'rdp' in sn_low or sn_low.startswith('rdp-'):
-        session_type = 'rdp'
-        is_rdp = True
-    else:
-        session_type = session_name
-        is_rdp = False
+def _wts_query_string(session_id: int, info_class: int) -> str:
+    """Llama WTSQuerySessionInformationW y devuelve el string, o '' si falla."""
+    lib = _wtsapi32
+    if lib is None:
+        return ''
+    pp_buffer = ctypes.c_wchar_p()
+    p_bytes = ctypes.c_uint32(0)
+    ok = lib.WTSQuerySessionInformationW(
+        _WTS_CURRENT_SERVER_HANDLE,
+        session_id,
+        info_class,
+        ctypes.byref(pp_buffer),
+        ctypes.byref(p_bytes),
+    )
+    if not ok or not pp_buffer.value:
+        return ''
+    try:
+        return pp_buffer.value or ''
+    finally:
+        lib.WTSFreeMemory(pp_buffer)
 
-    return {
-        'username':    username,
-        'session_name': session_name,
-        'session_id':   session_id,
-        'state':        state,
-        'is_active':    is_active,
-        'is_rdp':       is_rdp,
-        'session_type': session_type,
-        'logon_time':   logon_time,
-        'host':         '',
-    }
+
+def _wts_query_logon_time(session_id: int) -> str | None:
+    """Lee el logon time como ISO 8601."""
+    lib = _wtsapi32
+    if lib is None:
+        return None
+    pp_buffer = ctypes.c_wchar_p()
+    p_bytes = ctypes.c_uint32(0)
+    ok = lib.WTSQuerySessionInformationW(
+        _WTS_CURRENT_SERVER_HANDLE,
+        session_id,
+        _WTSLogonTime,
+        ctypes.byref(pp_buffer),
+        ctypes.byref(p_bytes),
+    )
+    if not ok or not pp_buffer.value or p_bytes.value < 8:
+        return None
+    try:
+        # WTSLogonTime devuelve un LARGE_INTEGER (8 bytes) con los 100ns
+        # ticks desde 1601-01-01 (FILETIME). Convertimos a datetime.
+        import struct
+        ticks = struct.unpack('<Q', pp_buffer.value[:8])[0]
+        epoch_start = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        # FILETIME ticks: 10_000_000 por segundo
+        seconds = ticks / 10_000_000
+        dt = epoch_start.fromtimestamp(epoch_start.timestamp() + seconds, tz=timezone.utc)
+        return dt.isoformat()
+    except Exception:
+        return None
+    finally:
+        lib.WTSFreeMemory(pp_buffer)
+
+
+def _wts_query_client_address(session_id: int) -> str:
+    """Lee WTSClientAddress. Devuelve IP como string o '' si no es RDP.
+
+    WTSClientAddress devuelve un WTS_CLIENT_ADDRESS struct (4 bytes family +
+    4 bytes padding + 16 bytes address). Solo es relevante para sesiones
+    RDP; en consola o desconectado devuelve family=0 (AF_UNSPEC).
+    """
+    lib = _wtsapi32
+    if lib is None:
+        return ''
+    pp_buffer = ctypes.c_wchar_p()
+    p_bytes = ctypes.c_uint32(0)
+    ok = lib.WTSQuerySessionInformationW(
+        _WTS_CURRENT_SERVER_HANDLE,
+        session_id,
+        _WTSClientAddress,
+        ctypes.byref(pp_buffer),
+        ctypes.byref(p_bytes),
+    )
+    if not ok or not pp_buffer.value or p_bytes.value < 4:
+        return ''
+    try:
+        import struct
+        # WTS_CLIENT_ADDRESS: 4 bytes family + 18 bytes address (IPv4: 4 bytes)
+        family = struct.unpack('<I', pp_buffer.value[:4])[0]
+        if family == 2:  # AF_INET = IPv4
+            ip_bytes = pp_buffer.value[4:8]
+            return '.'.join(str(b) for b in ip_bytes)
+        return ''
+    except Exception:
+        return ''
+    finally:
+        lib.WTSFreeMemory(pp_buffer)
+
+
+_WTS_STATE_NAMES = {
+    _WTSActive:       'Active',
+    _WTSConnected:    'Connected',
+    _WTSConnectQuery: 'ConnectQuery',
+    _WTSShadow:       'Shadow',
+    _WTSDisconnected: 'Disconnected',
+    _WTSIdle:         'Idle',
+    _WTSListen:       'Listen',
+    _WTSReset:        'Reset',
+    _WTSDown:         'Down',
+    _WTSInit:         'Init',
+}
+
+
+def _get_sessions_via_wtsapi() -> list[dict]:
+    """Enumera sesiones via WTSEnumerateSessionsW (API nativa de Windows).
+
+    Es la unica forma confiable de listar sesiones cuando el agente
+    corre como servicio. 'query session' y 'quser' (ejecutables) pueden
+    fallar o devolver 0 sesiones porque requieren que la consola de la
+    sesion 0 tenga window station accesible, lo cual no siempre es asi
+    para servicios que corren como LocalSystem o NetworkService.
+
+    Devuelve lista de {username, session_name, session_id, state, is_active,
+    is_rdp, session_type, logon_time, host}.
+    """
+    lib = _init_wtsapi()
+    if lib is None:
+        return []
+
+    pp_session_info = ctypes.POINTER(_WTS_SESSION_INFOW)()
+    p_count = ctypes.c_uint32(0)
+
+    if not lib.WTSEnumerateSessionsW(
+        _WTS_CURRENT_SERVER_HANDLE,
+        0,  # Reserved
+        1,  # Version 1
+        ctypes.byref(pp_session_info),
+        ctypes.byref(p_count),
+    ):
+        return []
+
+    sessions: list[dict] = []
+    try:
+        count = p_count.value
+        for i in range(count):
+            try:
+                si = pp_session_info[i]
+            except IndexError:
+                break
+
+            session_id = si.SessionId
+            win_station = si.pWinStationName or ''
+            state_code = si.State
+            state_str = _WTS_STATE_NAMES.get(state_code, f'Unknown({state_code})')
+
+            # Info adicional (username, hostname, logon time)
+            username = _wts_query_string(session_id, _WTSUserName)
+            if not username:
+                continue
+            domain = _wts_query_string(session_id, _WTSDomainName)
+            client_name = _wts_query_string(session_id, _WTSClientName)
+            client_addr = _wts_query_client_address(session_id)
+            logon_time = _wts_query_logon_time(session_id)
+
+            # Filtrar sesiones de servicio / listeners RDP
+            if username.lower() in ('services', 'local service', 'system'):
+                continue
+            if win_station.lower().startswith('rdp-tcp'):
+                continue
+            if win_station.lower() == 'services':
+                continue
+
+            is_active = state_code in (_WTSActive, _WTSConnected)
+            sn_low = win_station.lower()
+            if sn_low == 'console':
+                session_type = 'console'
+                is_rdp = False
+            elif 'rdp' in sn_low:
+                session_type = 'rdp'
+                is_rdp = True
+            else:
+                session_type = win_station
+                is_rdp = bool(client_addr)  # heuristic: tiene IP de cliente = RDP
+
+            full_user = f"{domain}\\{username}" if domain else username
+
+            sessions.append({
+                'username':     full_user,
+                'session_name': win_station,
+                'session_id':   session_id,
+                'state':        state_str,
+                'is_active':    is_active,
+                'is_rdp':       is_rdp,
+                'session_type': session_type,
+                'logon_time':   logon_time,
+                'host':         client_addr or client_name or '',
+            })
+    finally:
+        lib.WTSFreeMemory(pp_session_info)
+
+    return sessions
 
 
 def get_rdp_sessions() -> dict:
@@ -376,31 +561,15 @@ def get_rdp_sessions() -> dict:
       ],
     }
 
-    Implementacion: usa 'query session' (cmd.exe builtin) para listar las
-    sesiones reales, que funciona correctamente cuando el agente corre como
-    servicio (a diferencia de psutil.users() que falla bajo LocalSystem
-    en Windows). Parser tolerante a espanol/ingles.
+    Implementacion: usa la API nativa de Windows (WTSEnumerateSessionsW)
+    via ctypes. Esta API funciona correctamente cuando el agente corre
+    como servicio (Session 0), a diferencia de 'query session' que
+    puede fallar o devolver 0 sesiones.
 
-    Safe de llamar: cada sub-collector tiene try/except y devuelve [].
+    Las conexiones RDP (puerto 3389) vienen de psutil.net_connections,
+    complementarias a la info de sesiones (dan la IP:puerto remoto).
     """
-    users: list[dict] = []
-    try:
-        result = subprocess.run(
-            ['query', 'session'],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            shell=False,
-        )
-        if result.returncode == 0 and result.stdout:
-            # Saltar la cabecera (2 lineas: titulo + separador)
-            lines = result.stdout.splitlines()
-            for line in lines[2:]:
-                parsed = _parse_query_session_line(line)
-                if parsed:
-                    users.append(parsed)
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
-        logger.debug("get_rdp_sessions: query session fallo: %s", exc)
+    users = _get_sessions_via_wtsapi()
 
     rdp_conns: list[dict] = []
     try:
