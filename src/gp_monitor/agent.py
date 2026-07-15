@@ -27,6 +27,7 @@ from gp_monitor.collectors import (
     collect_metrics,
     get_agent_version,
     get_os_info,
+    get_rdp_sessions,
 )
 from gp_monitor.config import Config, load_config
 from gp_monitor.state import (
@@ -202,6 +203,7 @@ class MonitorAgent:
         os_info = get_os_info()
         metrics = collect_metrics(net=self.net_collector)
         internal_ips = collect_internal_ips()
+        rdp = get_rdp_sessions()
 
         # El backend espera camelCase. Mapear:
         payload = {
@@ -219,6 +221,15 @@ class MonitorAgent:
             "networkTxBps":   metrics.get("network_tx_bps"),
             "uptimeSeconds":  metrics.get("uptime_seconds"),
             "internalIps":    internal_ips if internal_ips else None,
+            # Allowlist de comandos (leida de policy.toml). Sirve para que el
+            # dashboard muestre un dropdown contextual cuando el operador elige
+            # 'RunCommand'. Lista de {pattern, description}. Tipicamente <100
+            # entradas x ~50 bytes = ~5KB, despreciable para heartbeat.
+            "allowlistPatterns": self.allowlist.list_descriptions() if len(self.allowlist) > 0 else None,
+            # Sesiones RDP / usuarios conectados. El dashboard cachea esto y
+            # el detail page lo refresca cada 2s para vista "live".
+            "rdpUsers":       rdp.get("users") or None,
+            "rdpConnections": rdp.get("rdp_connections") or None,
             "collectedAt":    datetime.now(timezone.utc).isoformat(),
         }
 
