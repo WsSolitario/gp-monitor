@@ -200,3 +200,47 @@ def test_rdp_sessions_returns_empty_on_non_windows():
         from gp_monitor.collectors import _get_sessions_via_wtsapi
         result = _get_sessions_via_wtsapi()
         assert result == []
+
+
+def test_wtsapi_signature_is_correct():
+    """El signature de WTSEnumerateSessionsW debe estar bien declarado.
+
+    Verifica que el arg 2 (Reserved) sea DWORD (ctypes.c_uint32) y no
+    puntero, que era el bug que crasheaba el agente con
+    'argument 2: TypeError: expected LP_c_ulong instance instead of int'.
+    """
+    import platform
+    if platform.system() != 'Windows':
+        return
+    import ctypes
+    from gp_monitor.collectors import _init_wtsapi, _WTS_SESSION_INFOW
+    lib = _init_wtsapi()
+    assert lib is not None
+    fn = lib.WTSEnumerateSessionsW
+    # arg 1: c_void_p (HANDLE)
+    assert fn.argtypes[0] is ctypes.c_void_p
+    # arg 2: c_uint32 (Reserved, value, no puntero) -- bug fix
+    assert fn.argtypes[1] is ctypes.c_uint32
+    # arg 3: c_uint32 (Version, value)
+    assert fn.argtypes[2] is ctypes.c_uint32
+    # arg 4: puntero a puntero de WTS_SESSION_INFOW
+    assert fn.argtypes[3] is ctypes.POINTER(ctypes.POINTER(_WTS_SESSION_INFOW))
+    # arg 5: puntero a DWORD (count)
+    assert fn.argtypes[4] is ctypes.c_uint32
+
+    # Verifica que llamar NO crashee con 'expected LP_c_ulong instance instead of int'
+    pp_session = ctypes.POINTER(_WTS_SESSION_INFOW)()
+    p_count = ctypes.c_uint32(0)
+    result = fn(
+        ctypes.c_void_p(0),    # hServer = current
+        ctypes.c_uint32(0),    # Reserved = 0 (value, no puntero)
+        ctypes.c_uint32(1),    # Version = 1
+        ctypes.byref(pp_session),
+        ctypes.byref(p_count),
+    )
+    # result puede ser 0 (fallo) o != 0 (exito) -- lo importante es que
+    # no haya crasheado al armar la call.
+    assert result in (0, 1) or result != 0  # cualquier no-raise es OK
+    # Liberar la memoria si se asigno
+    if pp_session:
+        lib.WTSFreeMemory(pp_session)

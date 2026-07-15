@@ -322,9 +322,10 @@ def _init_wtsapi():
         lib = ctypes.WinDLL('wtsapi32.dll', use_last_error=True)
 
         # WTSEnumerateSessionsW(HANDLE, DWORD, DWORD, PWTS_SESSION_INFOW*, DWORD*)
+        #                                                       ^^^^^^ Reserved (value, no pointer!)
         WTSEnumerateSessionsW = lib.WTSEnumerateSessionsW
         WTSEnumerateSessionsW.argtypes = [
-            ctypes.c_void_p, _pUInt32, ctypes.c_uint32, _ppSessionInfo, _pUInt32,
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, _ppSessionInfo, _pUInt32,
         ]
         WTSEnumerateSessionsW.restype = ctypes.c_int
 
