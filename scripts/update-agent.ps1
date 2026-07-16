@@ -68,6 +68,29 @@ function Invoke-Git {
     return $output
 }
 
+# Wrapper generico para procesos externos (git, python, etc.) que escriben
+# a stderr incluso en exito. Igual que Invoke-Git pero sin asumir git.
+# Devuelve el output completo (stdout+stderr mergeados) y propaga throw
+# solo si exit code != 0.
+function Invoke-Exe {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(ValueFromRemainingArguments=$true)][string[]]$Args
+    )
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $FilePath @Args 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldEAP
+    }
+    if ($exitCode -ne 0) {
+        throw "$FilePath $Args fallo (exit=$exitCode): $($output -join "`n")"
+    }
+    return $output
+}
+
 # ─── Paths y constantes ─────────────────────────────────────────────────────
 $Script:InstallDir   = "C:\Tools\gp-monitor"
 $Script:VenvPython   = Join-Path $InstallDir ".venv\Scripts\python.exe"
@@ -134,8 +157,8 @@ Write-Log "OK: venv existe"
 
 # Check 4: git
 try {
-    $gitVersion = git --version
-    Write-Log "OK: git ($gitVersion)"
+    $gitVersion = Invoke-Exe -FilePath "git" -Args "--version"
+    Write-Log "OK: git ($($gitVersion -join ' '))"
 } catch {
     Write-Log "git no esta instalado o no esta en PATH." "ERROR"
     exit 1
@@ -163,12 +186,17 @@ if ($Rollback) {
         Pop-Location
     }
 
-    & $VenvPython -m pip install -e . 2>&1 | Out-Null
+    Invoke-Exe -FilePath $VenvPython -Args @("-m", "pip", "install", "-e", ".") | Out-Null
     Write-Log "OK: pip install -e ."
 
     $runningProcs | Stop-Process -Force
     Start-Sleep -Seconds 5
-    & $VenvPython -m gp_monitor start
+    try {
+        $rbOutput = Invoke-Exe -FilePath $VenvPython -Args @("-m", "gp_monitor", "start")
+    } catch {
+        Write-Log "Rollback: fallo al arrancar agente: $_" "ERROR"
+        exit 1
+    }
     Write-Log "OK: agente reiniciado en version $($backup.version)"
     Write-Banner "Rollback completo a $($backup.version). Verificar log: $AgentLog"
     exit 0
@@ -235,9 +263,11 @@ try {
 
     # pip install -e .
     Write-Log "pip install -e . ..."
-    & $VenvPython -m pip install -e . 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "pip install fallo. Rollback..." "ERROR"
+    try {
+        Invoke-Exe -FilePath $VenvPython -Args @("-m", "pip", "install", "-e", ".") | Out-Null
+    } catch {
+        Write-Log "pip install fallo: $_" "ERROR"
+        Write-Log "Iniciando rollback automatico..." "WARN"
         & $PSCommandPath -Rollback
         exit 1
     }
@@ -258,8 +288,16 @@ try {
 
     # Iniciar servicio
     Write-Log "Iniciando agente..."
-    & $VenvPython -m gp_monitor start 2>&1 | Out-Null
-    Write-Log "OK: agente arrancado"
+    try {
+        $startOutput = Invoke-Exe -FilePath $VenvPython -Args @("-m", "gp_monitor", "start")
+        # El output incluye '✓ Servicio arrancado.' si fue exitoso
+        Write-Log "OK: agente arrancado ($($startOutput -join ' '))"
+    } catch {
+        Write-Log "Fallo al arrancar el agente: $_" "ERROR"
+        Write-Log "Para diagnostico manual:" "ERROR"
+        Write-Log "  $VenvPython -m gp_monitor start" "ERROR"
+        exit 1
+    }
 
     # Post-check
     if (-not $SkipPostCheck) {
