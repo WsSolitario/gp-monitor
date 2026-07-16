@@ -47,6 +47,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Wrapper para git: git escribe 'From https://...' a stderr en cada fetch,
+# lo que PowerShell interpreta como error y aborta el script aunque git
+# haya tenido exito. Este helper silencioso redirige stderr a stdout y
+# solo propaga el error si el exit code fue != 0.
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Args)
+    $output = & git @Args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $Args fallo (exit=$LASTEXITCODE): $($output -join "`n")"
+    }
+    return $output
+}
+
 # ─── Paths y constantes ─────────────────────────────────────────────────────
 $Script:InstallDir   = "C:\Tools\gp-monitor"
 $Script:VenvPython   = Join-Path $InstallDir ".venv\Scripts\python.exe"
@@ -136,7 +149,7 @@ if ($Rollback) {
 
     Push-Location $InstallDir
     try {
-        git reset --hard $backup.commit 2>&1 | Out-Null
+        Invoke-Git reset --hard $backup.commit | Out-Null
         Write-Log "OK: git reset a $($backup.commit)"
     } finally {
         Pop-Location
@@ -158,7 +171,7 @@ if ($Rollback) {
 Push-Location $InstallDir
 try {
     # Check 6: git working tree limpio (sin cambios sin commitear)
-    $gitStatus = git status --porcelain
+    $gitStatus = Invoke-Git status --porcelain
     if ($gitStatus) {
         Write-Log "Hay cambios sin commitear en el repo:" "WARN"
         $gitStatus | ForEach-Object { Write-Log "  $_" "WARN" }
@@ -174,8 +187,8 @@ try {
     }
 
     # Check 7: branch actual y version antes
-    $currentBranch = git rev-parse --abbrev-ref HEAD
-    $currentCommit = git rev-parse --short HEAD
+    $currentBranch = Invoke-Git rev-parse --abbrev-ref HEAD
+    $currentCommit = Invoke-Git rev-parse --short HEAD
     $currentVersion = Select-String -Path "pyproject.toml" -Pattern '^version' | ForEach-Object { ($_ -split '"')[1] }
     Write-Log "Estado actual: branch=$currentBranch commit=$currentCommit version=$currentVersion"
 
@@ -194,17 +207,17 @@ try {
     # git fetch + reset al target
     Write-Log "git fetch origin..."
     if (-not $DryRun) {
-        git fetch origin 2>&1 | Out-Null
+        Invoke-Git fetch origin | Out-Null
     }
 
     Write-Log "git reset --hard $TargetVersion..."
     if (-not $DryRun) {
-        git reset --hard $TargetVersion 2>&1 | Out-Null
+        Invoke-Git reset --hard $TargetVersion | Out-Null
     }
 
     # nueva version
     $newVersion = Select-String -Path "pyproject.toml" -Pattern '^version' | ForEach-Object { ($_ -split '"')[1] }
-    $newCommit = git rev-parse --short HEAD
+    $newCommit = Invoke-Git rev-parse --short HEAD
     Write-Log "Estado nuevo: commit=$newCommit version=$newVersion"
 
     if ($DryRun) {
