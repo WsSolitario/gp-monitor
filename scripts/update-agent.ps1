@@ -48,14 +48,22 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Wrapper para git: git escribe 'From https://...' a stderr en cada fetch,
-# lo que PowerShell interpreta como error y aborta el script aunque git
-# haya tenido exito. Este helper silencioso redirige stderr a stdout y
-# solo propaga el error si el exit code fue != 0.
+# lo que PowerShell intercepta como NativeCommandError y aborta el script
+# aunque el comando haya tenido exito. Este helper baja temporalmente
+# $ErrorActionPreference a 'Continue' para que no se transforme stderr en
+# error fatal, y solo propaga el error si el exit code fue != 0.
 function Invoke-Git {
     param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Args)
-    $output = & git @Args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $Args fallo (exit=$LASTEXITCODE): $($output -join "`n")"
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & git @Args 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldEAP
+    }
+    if ($exitCode -ne 0) {
+        throw "git $Args fallo (exit=$exitCode): $($output -join "`n")"
     }
     return $output
 }
