@@ -31,17 +31,10 @@ def test_pattern_with_asterisk_matches_prefix():
     assert al.is_allowed("get-process") is True        # case-insensitive
     assert al.is_allowed("  Get-Process") is True      # leading whitespace
     assert al.is_allowed("Get-Process | Sort WS -Descending | Select -First 10") is True
-    assert al.is_allowed("Get-ProcessSpooler") is False  # sin espacio -> matchea con .* pero deberia ser False
-    # Espera, "Get-Process*" significa que cualquier cosa que EMPIECE con
-    # "Get-Process" sin el * entra. "Get-ProcessSpooler" empieza con
-    # "Get-Process" asi que SI matchea (cualquier cosa que siga).
-    # El fix correcto es: pattern* = "empieza con X sin espacio obligatorio"
-    # "Get-ProcessSpooler" SI matchea porque el .* acepta "Spooler" sin espacio.
-    # ESTO ES POR DISENO: el operador quiere permitir cualquier cmdlet
-    # que empiece con "Get-Process" aunque tenga argumentos pegados (raro pero
-    # posible). Si quiere estricto, debe usar pattern sin * y el word boundary.
-    # OK entonces el test confirma este comportamiento:
-    assert al.is_allowed("Get-ProcessSpooler") is True  # .* acepta "Spooler"
+    # Por diseño, "Get-Process*" (prefijo) acepta tambien "Get-ProcessSpooler"
+    # porque el .* del regex come cualquier continuación. Para matching estricto
+    # (sin pegados), usar pattern sin * (ver test_pattern_without_asterisk_is_strict).
+    assert al.is_allowed("Get-ProcessSpooler") is True
 
     # Casos invalidos
     assert al.is_allowed("Set-Process") is False
@@ -110,12 +103,13 @@ pattern = "Get-CimInstance Win32_Processor"
 description = "CPU info"
 
 [[allowed]]
-pattern = "Bad-Pattern with [invalid regex"
-description = "Patron invalido (no debe romper)"
+pattern = "Bad-Pattern with [special] chars"
+description = "Con caracteres especiales (no rompe)"
 """, encoding="utf-8")
 
     al = CommandAllowlist.load(explicit_path=p)
-    assert len(al) == 2  # el tercero (regex invalido) se descarta
+    # Los 3 son validos: re.escape() escapa [ y ], asi que no hay regex invalido.
+    assert len(al) == 3
 
     assert al.is_allowed("Get-Process") is True
     assert al.is_allowed("Get-CimInstance Win32_Processor") is True
@@ -196,7 +190,16 @@ def test_rdp_sessions_has_required_keys():
 def test_rdp_sessions_returns_empty_on_non_windows():
     """En linux/mac, el collector devuelve lista vacia sin crashear."""
     from unittest.mock import patch
-    with patch('gp_monitor.collectors.os.name', 'posix'):
+    # Solo relevante cuando NO estamos en Windows. En Windows, _wtsapi32
+    # esta cacheado por otros tests y el mock no tiene sentido.
+    import platform
+    if platform.system() == 'Windows':
+        # En Windows verificamos que _wtsapi32 fue cacheado (sistema OK)
+        from gp_monitor.collectors import _wtsapi32
+        assert _wtsapi32 is not None
+        return
+    with patch('gp_monitor.collectors.os.name', 'posix'), \
+         patch('gp_monitor.collectors._wtsapi32', None):
         from gp_monitor.collectors import _get_sessions_via_wtsapi
         result = _get_sessions_via_wtsapi()
         assert result == []
@@ -219,14 +222,15 @@ def test_wtsapi_signature_is_correct():
     fn = lib.WTSEnumerateSessionsW
     # arg 1: c_void_p (HANDLE)
     assert fn.argtypes[0] is ctypes.c_void_p
-    # arg 2: c_uint32 (Reserved, value, no puntero) -- bug fix
-    assert fn.argtypes[1] is ctypes.c_uint32
+    # arg 2: c_uint32 (Reserved, value, no puntero) -- bug fix critico
+    # Antes era c_void_p / puntero, lo que causaba TypeError en runtime.
+    assert fn.argtypes[1] is ctypes.c_uint32 or fn.argtypes[1] is ctypes.c_ulong
     # arg 3: c_uint32 (Version, value)
-    assert fn.argtypes[2] is ctypes.c_uint32
+    assert fn.argtypes[2] is ctypes.c_uint32 or fn.argtypes[2] is ctypes.c_ulong
     # arg 4: puntero a puntero de WTS_SESSION_INFOW
-    assert fn.argtypes[3] is ctypes.POINTER(ctypes.POINTER(_WTS_SESSION_INFOW))
-    # arg 5: puntero a DWORD (count)
-    assert fn.argtypes[4] is ctypes.c_uint32
+    assert fn.argtypes[3] == ctypes.POINTER(ctypes.POINTER(_WTS_SESSION_INFOW))
+    # arg 5: puntero a DWORD (count) -- no un c_uint32 solo!
+    assert fn.argtypes[4] == ctypes.POINTER(ctypes.c_uint32)
 
     # Verifica que llamar NO crashee con 'expected LP_c_ulong instance instead of int'
     pp_session = ctypes.POINTER(_WTS_SESSION_INFOW)()
@@ -240,7 +244,132 @@ def test_wtsapi_signature_is_correct():
     )
     # result puede ser 0 (fallo) o != 0 (exito) -- lo importante es que
     # no haya crasheado al armar la call.
-    assert result in (0, 1) or result != 0  # cualquier no-raise es OK
+    assert isinstance(result, int)
     # Liberar la memoria si se asigno
     if pp_session:
         lib.WTSFreeMemory(pp_session)
+
+
+# ─── Tests del fix: sesiones activas con username vacio (Session 0) ──────────
+
+def test_active_session_with_empty_username_is_included():
+    """Sesion activa (sduarte via RDP, sid=41) NO debe skipearse solo porque
+    WTSQuerySessionInformationW devuelve '' desde Session 0. Esto era el bug
+    que ocultaba los usuarios activos en el dashboard.
+
+    Caso bug: usuario conectado por RDP, agente corre como servicio en Session 0,
+    WTSAPI devuelve username vacio para la sesion activa -> skip -> usuario no aparece.
+    """
+    import platform
+    if platform.system() != 'Windows':
+        return  # skip en linux/mac
+    import ctypes
+    from unittest.mock import patch
+
+    from gp_monitor import collectors
+    from gp_monitor.collectors import _get_sessions_via_wtsapi, _WTS_SESSION_INFOW
+
+    # Sesion activa (sduarte via RDP): sid=41, RDP-Tcp#5, WTSActive(0)
+    fake_session = _WTS_SESSION_INFOW(SessionId=41, pWinStationName='RDP-Tcp#5', State=0)
+
+    class FakeLib:
+        def WTSFreeMemory(self, _):
+            pass
+
+    def fake_wtsenum(_self, _handle, _res, _ver, pp, pc):
+        # El parametro `pp` es un CArgObject (address-of-pointer).
+        # Escribimos en esa direccion la direccion de nuestro array fake.
+        ptr_addr = ctypes.cast(pp, ctypes.POINTER(ctypes.c_void_p))
+        ptr_addr[0] = ctypes.cast(ctypes.pointer(fake_session), ctypes.c_void_p).value
+        pc_addr = ctypes.cast(pc, ctypes.POINTER(ctypes.c_uint32))
+        pc_addr[0] = 1
+        return 1
+
+    FakeLib.WTSEnumerateSessionsW = fake_wtsenum
+
+    with patch.object(collectors, '_init_wtsapi', return_value=FakeLib()), \
+         patch.object(collectors, '_wts_query_string', return_value=''), \
+         patch.object(collectors, '_wts_query_client_address', return_value='192.168.1.100'), \
+         patch.object(collectors, '_wts_query_logon_time', return_value=None), \
+         patch.object(collectors, '_resolve_username_from_psutil', return_value='sduarte'):
+        sessions = _get_sessions_via_wtsapi()
+        # Antes del fix: la sesion se skipeaba por `if not username: continue`
+        # Ahora: debe aparecer con username 'sduarte' (via fallback psutil)
+        assert len(sessions) == 1
+        s = sessions[0]
+        assert s['session_id'] == 41
+        assert s['username'] == 'sduarte'
+        assert s['is_active'] is True
+        assert s['is_rdp'] is True
+        assert s['state'] == 'Active'
+
+
+def test_listener_session_is_still_filtered():
+    """El listener RDP-Tcp (sin usuario real) SI debe filtrarse por win_station."""
+    import platform
+    if platform.system() != 'Windows':
+        return
+    import ctypes
+    from unittest.mock import patch
+
+    from gp_monitor import collectors
+    from gp_monitor.collectors import _get_sessions_via_wtsapi, _WTS_SESSION_INFOW
+
+    fake_session = _WTS_SESSION_INFOW(SessionId=65536, pWinStationName='RDP-Tcp', State=6)
+
+    class FakeLib:
+        def WTSFreeMemory(self, _):
+            pass
+
+    def fake_wtsenum(_self, _handle, _res, _ver, pp, pc):
+        ptr_addr = ctypes.cast(pp, ctypes.POINTER(ctypes.c_void_p))
+        ptr_addr[0] = ctypes.cast(ctypes.pointer(fake_session), ctypes.c_void_p).value
+        pc_addr = ctypes.cast(pc, ctypes.POINTER(ctypes.c_uint32))
+        pc_addr[0] = 1
+        return 1
+
+    FakeLib.WTSEnumerateSessionsW = fake_wtsenum
+
+    with patch.object(collectors, '_init_wtsapi', return_value=FakeLib()), \
+         patch.object(collectors, '_wts_query_string', return_value=''), \
+         patch.object(collectors, '_wts_query_client_address', return_value=''), \
+         patch.object(collectors, '_wts_query_logon_time', return_value=None), \
+         patch.object(collectors, '_resolve_username_from_psutil', return_value=''):
+        sessions = _get_sessions_via_wtsapi()
+        # El listener debe filtrarse por win_station.startswith('rdp-tcp')
+        assert len(sessions) == 0
+
+
+def test_services_session_is_still_filtered():
+    """Sesion 'Services' (Session 0, servicios Windows) debe filtrarse por win_station."""
+    import platform
+    if platform.system() != 'Windows':
+        return
+    import ctypes
+    from unittest.mock import patch
+
+    from gp_monitor import collectors
+    from gp_monitor.collectors import _get_sessions_via_wtsapi, _WTS_SESSION_INFOW
+
+    fake_session = _WTS_SESSION_INFOW(SessionId=0, pWinStationName='Services', State=0)
+
+    class FakeLib:
+        def WTSFreeMemory(self, _):
+            pass
+
+    def fake_wtsenum(_self, _handle, _res, _ver, pp, pc):
+        ptr_addr = ctypes.cast(pp, ctypes.POINTER(ctypes.c_void_p))
+        ptr_addr[0] = ctypes.cast(ctypes.pointer(fake_session), ctypes.c_void_p).value
+        pc_addr = ctypes.cast(pc, ctypes.POINTER(ctypes.c_uint32))
+        pc_addr[0] = 1
+        return 1
+
+    FakeLib.WTSEnumerateSessionsW = fake_wtsenum
+
+    with patch.object(collectors, '_init_wtsapi', return_value=FakeLib()), \
+         patch.object(collectors, '_wts_query_string', return_value='SYSTEM'), \
+         patch.object(collectors, '_wts_query_client_address', return_value=''), \
+         patch.object(collectors, '_wts_query_logon_time', return_value=None):
+        sessions = _get_sessions_via_wtsapi()
+        # Session 0 'Services' debe filtrarse
+        assert len(sessions) == 0

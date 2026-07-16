@@ -485,8 +485,10 @@ def _get_sessions_via_wtsapi() -> list[dict]:
         return []
 
     sessions: list[dict] = []
+    raw_session_count = 0
     try:
         count = p_count.value
+        raw_session_count = count
         for i in range(count):
             try:
                 si = pp_session_info[i]
@@ -497,26 +499,44 @@ def _get_sessions_via_wtsapi() -> list[dict]:
             win_station = si.pWinStationName or ''
             state_code = si.State
             state_str = _WTS_STATE_NAMES.get(state_code, f'Unknown({state_code})')
+            sn_low = win_station.lower()
+
+            # Filtrar EXCLUSIVAMENTE sesiones de servicio / listener RDP.
+            # Importante: NO filtrar por username vacio aqui, porque desde
+            # Session 0 (servicio) WTSQuerySessionInformationW a veces
+            # devuelve '' para sesiones activas (sesion en uso concurrente).
+            # Filtrar por username vacio ocultaba los usuarios activos.
+            # Filtramos el listener RDP (state=WTSListen=6) y servicios
+            # (state=Active pero win_station='Services').
+            if state_code == _WTSListen:
+                continue
+            if sn_low == 'services':
+                continue
 
             # Info adicional (username, hostname, logon time)
             username = _wts_query_string(session_id, _WTSUserName)
-            if not username:
-                continue
             domain = _wts_query_string(session_id, _WTSDomainName)
             client_name = _wts_query_string(session_id, _WTSClientName)
             client_addr = _wts_query_client_address(session_id)
             logon_time = _wts_query_logon_time(session_id)
 
-            # Filtrar sesiones de servicio / listeners RDP
-            if username.lower() in ('services', 'local service', 'system'):
-                continue
-            if win_station.lower().startswith('rdp-tcp'):
-                continue
-            if win_station.lower() == 'services':
+            # Filtrar usuarios-sistema conocidos (despues de consultar username)
+            if username and username.lower() in ('services', 'local service', 'system'):
                 continue
 
+            # Si el username esta vacio (tipico para sesiones activas desde
+            # Session 0), intentar fallback via psutil (enumera procesos con
+            # su SessionId). Tambien funciona: usar el nombre de la win_station
+            # como label legible.
+            if not username:
+                fallback = _resolve_username_from_psutil(session_id)
+                if fallback:
+                    username = fallback
+                else:
+                    # Como ultimo recurso, mostrar el session_id legible
+                    username = f'user@{session_id}'
+
             is_active = state_code in (_WTSActive, _WTSConnected)
-            sn_low = win_station.lower()
             if sn_low == 'console':
                 session_type = 'console'
                 is_rdp = False
@@ -543,7 +563,59 @@ def _get_sessions_via_wtsapi() -> list[dict]:
     finally:
         lib.WTSFreeMemory(pp_session_info)
 
+    # Log resumen para que el operador verifique desde el log del agente
+    # (una linea por heartbeat, no es ruidosa).
+    logger.info(
+        "WTSAPI: %d sesiones crudas -> %d sesiones reportadas (filtradas: %d)",
+        raw_session_count, len(sessions), raw_session_count - len(sessions),
+    )
+
     return sessions
+
+
+def _resolve_username_from_psutil(session_id: int) -> str:
+    """Fallback: buscar el username del dueno de la sesion via psutil + kernel32.
+
+    WTSQuerySessionInformationW a veces devuelve vacio para sesiones activas
+    cuando el agente corre como servicio en Session 0. Como fallback, iteramos
+    los procesos visibles y, para cada uno, preguntamos a Windows
+    (ProcessIdToSessionId de kernel32) a que sesion pertenece. Si alguno
+    cae en `session_id` y tiene username legible (via psutil), lo devolvemos.
+
+    psutil >= 5.x expone 'username' en process_info(). 'session_id' no
+    esta siempre disponible como atributo, asi que usamos kernel32.
+    """
+    if os.name != 'nt':
+        return ''
+    try:
+        kernel32 = ctypes.WinDLL('kernel32.dll', use_last_error=True)
+        kernel32.ProcessIdToSessionId.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.ProcessIdToSessionId.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return ''
+
+    found_user = ''
+    try:
+        for proc in psutil.process_iter(['pid', 'username']):
+            try:
+                info = proc.info
+                pid = info.get('pid')
+                user = info.get('username') or ''
+                if not pid or not user or user.lower().endswith('\\system'):
+                    continue
+                sess = ctypes.c_uint32(0)
+                ok = kernel32.ProcessIdToSessionId(ctypes.c_uint32(pid), ctypes.byref(sess))
+                if ok and sess.value == session_id:
+                    if '\\' in user:
+                        found_user = user.split('\\', 1)[1]
+                    else:
+                        found_user = user
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+    except Exception as exc:                                # noqa: BLE001
+        logger.debug("psutil fallback para session %d fallo: %s", session_id, exc)
+    return found_user
 
 
 def get_rdp_sessions() -> dict:

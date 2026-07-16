@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import yaml
+if sys.version_info >= (3, 11):
+    import tomllib as _toml
+else:
+    import tomli as _toml  # type: ignore[import-not-found]
 
 logger = logging.getLogger("gp_monitor.allowlist")
 
@@ -60,9 +64,9 @@ class CommandAllowlist:
             return cls(allowed=[])
 
         try:
-            with path.open("r", encoding="utf-8") as fh:
-                raw = yaml.safe_load(fh) or {}
-        except (OSError, yaml.YAMLError) as exc:
+            with path.open("rb") as fh:
+                raw = _toml.load(fh)
+        except (OSError, _toml.TOMLDecodeError) as exc:
             logger.error("Error leyendo %s: %s", path, exc)
             return cls(allowed=[])
 
