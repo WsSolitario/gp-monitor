@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gp-monitor"
-version = "1.0.0"
+version = "1.0.1"
 description = "Agente Python para monitoreo de servidores (Windows Server 2019/2022, Linux, macOS) — envía métricas básicas a gp-it vía HTTPS."
 readme = "README.md"
 requires-python = ">=3.9"
