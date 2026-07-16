@@ -12,6 +12,39 @@ from gp_monitor import __version__
 from gp_monitor.config import load_config
 
 
+def _configure_utf8_io() -> None:
+    """Reconfigura stdout/stderr a UTF-8.
+
+    Sin esto, los prints con caracteres unicode (✓ ✗ …) lanzan
+    UnicodeEncodeError en consolas Windows que usan cp1252.
+    El bug aparecia al hacer `python -m gp_monitor start` desde
+    un proceso con codificacion por defecto cp1252.
+
+    Seguro de llamar: si reconfigure no esta disponible (Python < 3.7),
+    intenta via sys.setdefaultencoding (deprecated pero funcional).
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        # Python 3.7+: API oficial
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+                continue
+            except Exception:
+                pass
+        # Fallback para Python 3.6 (no deberia aplicar porque requires-python >= 3.9)
+        try:
+            stream.encoding = "utf-8"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+_configure_utf8_io()
+
+
 def _setup_logging(level: str, log_file: Optional[str] = None) -> None:
     """Wrapper backwards-compat: delega a agent.setup_logging."""
     from gp_monitor.agent import setup_logging

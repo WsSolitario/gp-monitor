@@ -5,5 +5,5 @@ La conexión es siempre saliente: el agente hace POST a la API cada N segundos.
 No requiere abrir puertos en el servidor donde corre.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 __all__ = ["__version__"]
