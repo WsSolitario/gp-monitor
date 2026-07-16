@@ -373,3 +373,49 @@ def test_services_session_is_still_filtered():
         sessions = _get_sessions_via_wtsapi()
         # Session 0 'Services' debe filtrarse
         assert len(sessions) == 0
+
+
+# ─── Tests del fix: UnicodeEncodeError en consola Windows cp1252 ───────────
+
+def test_safe_print_handles_unicode():
+    """_safe_print debe tolerar UnicodeEncodeError sin crashear.
+
+    Bug: en Windows con codificacion cp1252 (la default), print('✓ ...')
+    lanzaba UnicodeEncodeError y abortaba el script (caso 'start' del agente).
+    """
+    import sys
+    from gp_monitor.windows_service import _safe_print
+
+    # Caso 1: stream que NO soporta unicode (simulado)
+    class FakeCp1252Stream:
+        def __init__(self):
+            self.encoding = 'cp1252'
+        def write(self, s):
+            # cp1252 no puede codificar U+2713 (✓)
+            s.encode('cp1252')
+            return len(s)
+
+    fake = FakeCp1252Stream()
+    orig = sys.stdout
+    sys.stdout = fake
+    try:
+        # Debe hacer fallback a ASCII sin crashear
+        _safe_print("\u2713 Servicio 'gp-monitor' arrancado.")
+        _safe_print("\u2717 Error cargando configuracion: foo")
+    finally:
+        sys.stdout = orig
+    # Si llego aqui sin excepcion, el test pasa
+
+
+def test_configure_utf8_io_runs():
+    """_configure_utf8_io debe reconfigurar stdout/stderr a UTF-8 sin crashear."""
+    import sys
+    from gp_monitor.__main__ import _configure_utf8_io
+
+    # Llamar no debe lanzar excepciones
+    _configure_utf8_io()
+    _configure_utf8_io()  # idempotente
+
+    # El stdout/stderr deben seguir funcionando normalmente
+    print("test print after _configure_utf8_io")
+    print("\u2713 unicode print after _configure_utf8_io")

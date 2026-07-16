@@ -22,6 +22,20 @@ from typing import Optional
 
 logger = logging.getLogger("gp_monitor.windows_service")
 
+
+def _safe_print(msg: str) -> None:
+    """Print defensivo: evita UnicodeEncodeError en consolas Windows cp1252.
+
+    Si el stream soporta UTF-8 (reconfigurado en __main__.py), usa print.
+    Si no, cae a ASCII-safe sustituyendo los caracteres problematicos.
+    """
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        # Fallback ASCII-safe
+        safe = msg.encode("ascii", "replace").decode("ascii")
+        print(safe)
+
 SERVICE_NAME = "gp-monitor"
 SERVICE_DISPLAY_NAME = "gp-monitor Agent"
 SERVICE_DESCRIPTION = (
@@ -128,10 +142,10 @@ else:
 def install_service(config_path: Optional[Path] = None) -> int:
     """Registra gp-monitor como servicio de Windows."""
     if not _is_windows():
-        print("✗ Esta función solo funciona en Windows.")
+        _safe_print("✗ Esta función solo funciona en Windows.")
         return 2
     if not _pywin32_available():
-        print("✗ pywin32 no está instalado. Ejecuta: pip install pywin32")
+        _safe_print("✗ pywin32 no está instalado. Ejecuta: pip install pywin32")
         return 2
 
     import win32serviceutil
@@ -155,7 +169,7 @@ def install_service(config_path: Optional[Path] = None) -> int:
             description=SERVICE_DESCRIPTION,
             startType=win32service.SERVICE_AUTO_START,
         )
-        print(f"✓ Servicio '{SERVICE_NAME}' instalado.")
+        _safe_print(f"✓ Servicio '{SERVICE_NAME}' instalado.")
         print(f"  Para arrancarlo:    gp-monitor start")
         print(f"  Auto-arranca con Windows.")
         return 0
@@ -164,16 +178,16 @@ def install_service(config_path: Optional[Path] = None) -> int:
         # En ese caso el operador probablemente solo quiere re-registrar
         # (por ejemplo tras un upgrade del paquete). Lo tratamos como OK.
         if getattr(exc, "winerror", None) == 1073:
-            print(f"✓ Servicio '{SERVICE_NAME}' ya estaba registrado.")
+            _safe_print(f"✓ Servicio '{SERVICE_NAME}' ya estaba registrado.")
             print(f"  Para (re)arrancarlo: gp-monitor stop && gp-monitor start")
             return 0
-        print(f"✗ Error instalando servicio: {exc}")
+        _safe_print(f"✗ Error instalando servicio: {exc}")
         return 1
 
 
 def uninstall_service() -> int:
     if not _is_windows() or not _pywin32_available():
-        print("✗ Solo en Windows con pywin32.")
+        _safe_print("✗ Solo en Windows con pywin32.")
         return 2
 
     import win32serviceutil
@@ -182,16 +196,16 @@ def uninstall_service() -> int:
     # Parar primero si está corriendo
     try:
         win32serviceutil.StopService(SERVICE_NAME)
-        print("• Servicio detenido.")
+        _safe_print("• Servicio detenido.")
     except pywintypes.error:
         pass
 
     try:
         win32serviceutil.RemoveService(SERVICE_NAME)
-        print(f"✓ Servicio '{SERVICE_NAME}' desinstalado.")
+        _safe_print(f"✓ Servicio '{SERVICE_NAME}' desinstalado.")
         return 0
     except pywintypes.error as exc:
-        print(f"✗ Error desinstalando servicio: {exc}")
+        _safe_print(f"✗ Error desinstalando servicio: {exc}")
         return 1
 
 
@@ -202,10 +216,10 @@ def start_service() -> int:
     import pywintypes
     try:
         win32serviceutil.StartService(SERVICE_NAME)
-        print(f"✓ Servicio '{SERVICE_NAME}' arrancado.")
+        _safe_print(f"✓ Servicio '{SERVICE_NAME}' arrancado.")
         return 0
     except pywintypes.error as exc:
-        print(f"✗ Error arrancando servicio: {exc}")
+        _safe_print(f"✗ Error arrancando servicio: {exc}")
         return 1
 
 
@@ -216,10 +230,10 @@ def stop_service() -> int:
     import pywintypes
     try:
         win32serviceutil.StopService(SERVICE_NAME)
-        print(f"✓ Servicio '{SERVICE_NAME}' detenido.")
+        _safe_print(f"✓ Servicio '{SERVICE_NAME}' detenido.")
         return 0
     except pywintypes.error as exc:
-        print(f"✗ Error deteniendo servicio: {exc}")
+        _safe_print(f"✗ Error deteniendo servicio: {exc}")
         return 1
 
 
@@ -245,7 +259,7 @@ def service_status() -> int:
         print(f"Servicio '{SERVICE_NAME}': {STATE_NAMES.get(state_code, state_code)}")
         return 0 if running else 1
     except pywintypes.error as exc:
-        print(f"✗ Error consultando servicio: {exc}")
+        _safe_print(f"✗ Error consultando servicio: {exc}")
         return 1
 
 
